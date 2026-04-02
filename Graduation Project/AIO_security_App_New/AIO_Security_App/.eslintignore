@@ -1,0 +1,6 @@
+e2e/**
+playwright.config.ts
+vitest.setup.ts
+vitest.node.setup.ts
+vite.config.ts
+.testlintrc.js 

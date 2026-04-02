@@ -1,0 +1,3 @@
+{
+  "raw_log": "2026-02-26T10:11:00Z DNS query src_ip=10.0.0.15 user=svc_backup qname=aj39dk2m9b.data-transfer.example.com rcode=NOERROR\n2026-02-26T10:11:01Z DNS query src_ip=10.0.0.15 user=svc_backup qname=pl88xm12qd.data-transfer.example.com rcode=NOERROR\n2026-02-26T10:11:02Z DNS query src_ip=10.0.0.15 user=svc_backup qname=zm72nb91ka.data-transfer.example.com rcode=NOERROR\n2026-02-26T10:11:03Z DNS query src_ip=10.0.0.15 user=svc_backup qname=tr55vq20ms.data-transfer.example.com rcode=NOERROR"
+}

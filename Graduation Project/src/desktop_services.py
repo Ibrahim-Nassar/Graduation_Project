@@ -15,6 +15,7 @@ import src.pipeline as pipeline_module
 
 PROVIDER_ORDER = ("virustotal", "abuseipdb", "otx", "threatfox")
 SUPPORTED_MANUAL_TYPES = {"ip", "domain", "url", "hash"}
+_SETTINGS_FILE = Path.home() / ".soc_workstation_settings.json"
 
 
 @dataclass
@@ -30,6 +31,54 @@ def default_session_settings() -> SessionSettings:
         providers={provider: True for provider in PROVIDER_ORDER},
         history_enabled=False,
     )
+
+
+def load_persisted_settings() -> SessionSettings:
+    settings = default_session_settings()
+    if not _SETTINGS_FILE.exists():
+        return settings
+    try:
+        payload = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return settings
+    if not isinstance(payload, dict):
+        return settings
+
+    raw_keys = payload.get("api_keys", {})
+    if isinstance(raw_keys, dict):
+        cleaned = sanitize_api_keys({str(k): str(v) for k, v in raw_keys.items()})
+        settings.api_keys.update(cleaned)
+
+    raw_providers = payload.get("providers", {})
+    if isinstance(raw_providers, dict):
+        settings.providers.update(
+            {name: bool(raw_providers.get(name, True)) for name in PROVIDER_ORDER}
+        )
+
+    settings.history_enabled = bool(payload.get("history_enabled", False))
+    return settings
+
+
+def save_persisted_settings(settings: SessionSettings) -> bool:
+    payload = {
+        "api_keys": {
+            provider: sanitize_api_keys(settings.api_keys).get(provider, "")
+            for provider in PROVIDER_ORDER
+        },
+        "providers": {
+            provider: bool(settings.providers.get(provider, True))
+            for provider in PROVIDER_ORDER
+        },
+        "history_enabled": bool(settings.history_enabled),
+    }
+    try:
+        _SETTINGS_FILE.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
 
 
 def _unique_values(items: list[str]) -> list[str]:
@@ -232,6 +281,9 @@ def scan_iocs(
         provider_statuses = _flatten_provider_statuses(
             provider_results if isinstance(provider_results, dict) else {}
         )
+        effective_type = str(scan_result.get("type", "unknown"))
+        if effective_type != "ip" and (providers or {}).get("abuseipdb", True):
+            provider_statuses["abuseipdb"] = "not_supported"
         provider_summary = ", ".join(
             f"{provider}:{status}" for provider, status in provider_statuses.items()
         )
@@ -249,7 +301,7 @@ def scan_iocs(
             {
                 "ioc": ioc,
                 "detected_type": detected_type,
-                "effective_type": str(scan_result.get("type", "unknown")),
+                "effective_type": effective_type,
                 "status": str(scan_result.get("status", "unknown")),
                 "score": int(scan_result.get("score", 0) or 0),
                 "virustotal": provider_statuses["virustotal"],

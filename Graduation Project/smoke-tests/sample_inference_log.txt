@@ -1,1 +1,0 @@
-timestamp=2026-03-10T10:00:00Z user=analyst01 host=wkstn-22 src_ip=8.8.8.8 process=powershell.exe cmdline=powershell-enc-AAA destination=example.com

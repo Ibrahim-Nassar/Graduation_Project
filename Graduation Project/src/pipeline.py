@@ -405,26 +405,31 @@ def _load_ioc_enrichment_module() -> Any | None:
     if _IOC_MODULE_CACHE is not None:
         return _IOC_MODULE_CACHE
 
-    try:
-        module = importlib.import_module("ioc_enrichment")
-        _IOC_MODULE_CACHE = module
-        return module
-    except ModuleNotFoundError:
-        for ioc_src_path in _ioc_enrichment_search_paths():
-            if str(ioc_src_path) not in sys.path:
-                sys.path.insert(0, str(ioc_src_path))
+    for module_name in ("ioc_enrichment", "src.ioc_enrichment"):
+        try:
+            module = importlib.import_module(module_name)
+            _IOC_MODULE_CACHE = module
+            return module
+        except ModuleNotFoundError:
+            continue
+
+    for ioc_src_path in _ioc_enrichment_search_paths():
+        if str(ioc_src_path) not in sys.path:
+            sys.path.insert(0, str(ioc_src_path))
+        for module_name in ("ioc_enrichment", "src.ioc_enrichment"):
             try:
-                module = importlib.import_module("ioc_enrichment")
+                module = importlib.import_module(module_name)
                 _IOC_MODULE_CACHE = module
                 return module
             except ModuleNotFoundError:
                 continue
-        _IOC_MODULE_CACHE = None
-        return None
+    _IOC_MODULE_CACHE = None
+    return None
 
 
 def _ioc_enrichment_search_paths() -> list[Path]:
     candidates: list[Path] = []
+    candidates.append(Path(__file__).resolve().parent)
     configured_path = Path(os.environ["SOC_IOC_ENRICHMENT_PATH"]).resolve() if "SOC_IOC_ENRICHMENT_PATH" in os.environ else None
     if configured_path is not None:
         candidates.append(configured_path)

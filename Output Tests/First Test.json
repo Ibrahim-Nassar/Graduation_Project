@@ -1,0 +1,74 @@
+[
+  {
+    "raw": {
+      "errors": [],
+      "ioc": "8.8.8.8",
+      "providers": {
+        "abuseipdb": {
+          "details": {
+            "confidence": 0,
+            "reports": 28
+          },
+          "ioc": "8.8.8.8",
+          "provider": "abuseipdb",
+          "score": 0,
+          "status": "clean",
+          "type": "ip"
+        },
+        "otx": {
+          "details": {
+            "pulses": 0
+          },
+          "ioc": "8.8.8.8",
+          "provider": "otx",
+          "score": 10,
+          "status": "clean",
+          "type": "ip"
+        },
+        "threatfox": {
+          "details": {
+            "matches": 0,
+            "query_status": "no_result",
+            "search_term": "ioc:8.8.8.8"
+          },
+          "ioc": "8.8.8.8",
+          "provider": "threatfox",
+          "score": 0,
+          "status": "not_found",
+          "type": "ip"
+        },
+        "virustotal": {
+          "details": {
+            "harmless": 59,
+            "malicious": 0,
+            "suspicious": 0,
+            "timeout": 0,
+            "undetected": 35
+          },
+          "ioc": "8.8.8.8",
+          "provider": "virustotal",
+          "score": 10,
+          "status": "clean",
+          "type": "ip"
+        }
+      },
+      "score": 8,
+      "status": "clean",
+      "type": "ip"
+    },
+    "row": {
+      "abuseipdb": "clean",
+      "detected_type": "ip",
+      "effective_type": "ip",
+      "error_count": 0,
+      "errors": [],
+      "ioc": "8.8.8.8",
+      "otx": "clean",
+      "provider_summary": "virustotal:clean, abuseipdb:clean, otx:clean, threatfox:not_found",
+      "score": 8,
+      "status": "clean",
+      "threatfox": "not_found",
+      "virustotal": "clean"
+    }
+  }
+]

@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote_plus
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -63,21 +64,84 @@ _SIDEBAR = "#0F1629"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _status_item(value: str) -> QTableWidgetItem:
-    item = QTableWidgetItem(value)
-    low = value.lower()
-    _colors = {
-        "malicious": _DANGER,
-        "suspicious": _WARNING,
-        "clean": _ACCENT,
-        "not_found": _TEXT2,
-        "not_supported": _TEXT2,
-    }
-    if low in _colors:
-        item.setForeground(QColor(_colors[low]))
-    elif low in {"error", "invalid"}:
-        item.setForeground(QColor("#B91C1C"))
+def _status_tone(value: str) -> tuple[str, str]:
+    low = value.lower().strip()
+    if low in {"malicious"}:
+        return "MALICIOUS", _DANGER
+    if low in {"suspicious"}:
+        return "SUSPICIOUS", _WARNING
+    if low in {"clean"}:
+        return "CLEAN", _ACCENT
+    if low in {"not_found", "not_supported", "unknown", "n/a"}:
+        label = low.replace("_", " ").upper()
+        return label, _TEXT2
+    if low in {"error", "invalid"}:
+        return low.upper(), "#B91C1C"
+    return low.upper() if low else "UNKNOWN", _TEXT2
+
+
+def _status_item(value: str, *, badge: bool = True) -> QTableWidgetItem:
+    label, color = _status_tone(value)
+    text = f" {label} " if badge else label
+    item = QTableWidgetItem(text)
+    if badge:
+        item.setBackground(QColor(color))
+        item.setForeground(QColor("#FFFFFF"))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    else:
+        item.setForeground(QColor(color))
+    item.setToolTip(f"Status: {label.title()}")
+    item.setData(Qt.ItemDataRole.UserRole + 1, value)
     return item
+
+
+def _score_item(score_value: Any) -> QTableWidgetItem:
+    score = int(score_value or 0)
+    item = QTableWidgetItem(f"{score:>3d}")
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    if score >= 75:
+        color = _DANGER
+    elif score >= 35:
+        color = _WARNING
+    elif score <= 5:
+        color = _ACCENT
+    else:
+        color = _PRIMARY
+    item.setBackground(QColor(color))
+    item.setForeground(QColor("#FFFFFF"))
+    item.setToolTip(f"Risk score: {score}")
+    return item
+
+
+def _format_provider_summary(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "No provider summary available."
+    return text.replace(",", " |")
+
+
+def _format_ioc_detail_text(row: dict[str, Any]) -> str:
+    status = str(row.get("status", "unknown"))
+    providers = []
+    for provider in PROVIDER_ORDER:
+        providers.append(f"- {provider}: {row.get(provider, 'n/a')}")
+    provider_summary = str(row.get("provider_summary", "")).strip() or "N/A"
+    errors = row.get("errors") or []
+    raw_section = row.get("raw")
+    raw_text = json.dumps(raw_section, indent=2, sort_keys=True) if raw_section else "N/A"
+    return (
+        f"IOC: {row.get('ioc', '')}\n"
+        f"Detected Type: {row.get('detected_type', 'unknown')}\n"
+        f"Effective Type: {row.get('effective_type', 'unknown')}\n"
+        f"Final Status: {status}\n"
+        f"Score: {row.get('score', 0)}\n\n"
+        "Provider Statuses:\n"
+        f"{chr(10).join(providers)}\n\n"
+        f"Provider Summary:\n{provider_summary}\n\n"
+        "Errors:\n"
+        f"{chr(10).join(f'- {err}' for err in errors) if errors else '- None'}\n\n"
+        f"Raw Details:\n{raw_text}"
+    )
 
 
 def _card(title: str = "") -> tuple[QFrame, QVBoxLayout]:
@@ -135,6 +199,73 @@ def _btn(text: str, cls: str = "primary") -> QPushButton:
     return b
 
 
+class _BackgroundTaskWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+    progress = Signal(str)
+
+    def __init__(
+        self,
+        task: Callable[..., Any],
+        *,
+        task_kwargs: dict[str, Any],
+    ) -> None:
+        super().__init__()
+        self._task = task
+        self._task_kwargs = task_kwargs
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._task(progress=self.progress.emit, **self._task_kwargs)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(result)
+
+
+def _scan_iocs_background(
+    *,
+    iocs: list[str],
+    manual_ioc_type: str | None,
+    providers: dict[str, bool],
+    api_keys: dict[str, str],
+    progress: Callable[[str], None],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    total = len(iocs)
+    for index, ioc in enumerate(iocs, start=1):
+        progress(f"Scanning IOC {index} of {total}...")
+        rows.extend(
+            scan_iocs(
+                [ioc],
+                manual_ioc_type=manual_ioc_type,
+                providers=providers,
+                api_keys=api_keys,
+            )
+        )
+    return rows
+
+
+def _analyze_soc_background(
+    *,
+    selected_log: str,
+    model_path: str,
+    enrich_iocs: bool,
+    ioc_providers: dict[str, bool],
+    ioc_api_keys: dict[str, str],
+    progress: Callable[[str], None],
+) -> dict[str, Any]:
+    progress("Analyzing log with enrichment..." if enrich_iocs else "Analyzing log...")
+    return analyze_soc_log(
+        selected_log,
+        model_path=model_path,
+        enrich_iocs=enrich_iocs,
+        ioc_providers=ioc_providers,
+        ioc_api_keys=ioc_api_keys,
+    )
+
+
 class _Collapsible(QFrame):
     """Card with a clickable header that toggles body visibility."""
 
@@ -168,6 +299,11 @@ class _Collapsible(QFrame):
     def _toggle(self) -> None:
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
+        self._header.setText(self._label_text())
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._body.setVisible(expanded)
         self._header.setText(self._label_text())
 
     def body(self) -> QVBoxLayout:
@@ -549,6 +685,61 @@ QLabel[class="fileLabel"] {{
     font-size: 11px;
     color: {_TEXT2};
 }}
+QLabel[class="inlineStatus"] {{
+    font-size: 11px;
+    color: {_TEXT2};
+    padding: 2px 0;
+}}
+QLabel[class="statusBanner"] {{
+    border: 1px solid {_BORDER};
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+}}
+QLabel[class="statusInfo"] {{
+    border: 1px solid {_BORDER};
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    background: rgba(59, 130, 246, 0.10);
+    color: {_PRIMARY};
+}}
+QLabel[class="statusSuccess"] {{
+    border: 1px solid {_BORDER};
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    background: rgba(34, 197, 94, 0.10);
+    color: {_ACCENT};
+}}
+QLabel[class="statusDanger"] {{
+    border: 1px solid {_BORDER};
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    background: rgba(239, 68, 68, 0.12);
+    color: {_DANGER};
+}}
+QTextEdit[class="detailBox"] {{
+    font-size: 11.5px;
+    line-height: 1.3;
+}}
+QProgressBar {{
+    border: 1px solid {_BORDER};
+    border-radius: 5px;
+    text-align: center;
+    height: 14px;
+    background: {_SURFACE};
+    color: {_TEXT2};
+}}
+QProgressBar::chunk {{
+    background-color: {_PRIMARY};
+    border-radius: 4px;
+}}
 
 /* ── dialogs ── */
 QToolTip {{
@@ -591,6 +782,10 @@ class DesktopSecurityApp(QMainWindow):
         self.last_soc_payload: dict[str, Any] | None = None
         self.ioc_file_path: str | None = None
         self.soc_file_path: str | None = None
+        self._ioc_thread: QThread | None = None
+        self._ioc_worker: _BackgroundTaskWorker | None = None
+        self._soc_thread: QThread | None = None
+        self._soc_worker: _BackgroundTaskWorker | None = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -678,6 +873,12 @@ class DesktopSecurityApp(QMainWindow):
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == index)
 
+    def _set_banner(self, label: QLabel, message: str, tone: str = "info") -> None:
+        label.setText(message)
+        label.setProperty("class", f"status{tone.capitalize()}")
+        label.style().unpolish(label)
+        label.style().polish(label)
+
     def _set_ioc_loading(self, loading: bool, message: str = "") -> None:
         controls = [
             self.ioc_scan_btn,
@@ -687,14 +888,21 @@ class DesktopSecurityApp(QMainWindow):
             self.ioc_bulk_input,
             self.ioc_type_combo,
             self.ioc_use_providers,
+            self.ioc_browse_btn,
+            self.ioc_clear_file_btn,
         ]
         for control in controls:
             control.setEnabled(not loading)
         if loading:
             self.ioc_summary_label.setText(message or "Scanning IOCs...")
+            self.ioc_progress.setVisible(True)
+            self.ioc_progress.setRange(0, 0)
+            self._set_banner(self.ioc_run_status, message or "Scanning IOCs...", "info")
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             QApplication.processEvents()
         else:
+            self.ioc_progress.setVisible(False)
+            self.ioc_progress.setRange(0, 1)
             if QApplication.overrideCursor() is not None:
                 QApplication.restoreOverrideCursor()
 
@@ -706,16 +914,31 @@ class DesktopSecurityApp(QMainWindow):
             self.soc_raw_log_input,
             self.soc_model_path_input,
             self.soc_enrich_toggle,
+            self.soc_browse_btn,
+            self.soc_clear_file_btn,
         ]
         for control in controls:
             control.setEnabled(not loading)
         if loading:
             self.soc_summary_label.setText(message or "Running SOC analysis...")
+            self.soc_progress.setVisible(True)
+            self.soc_progress.setRange(0, 0)
+            self._set_banner(self.soc_run_status, message or "Running SOC analysis...", "info")
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             QApplication.processEvents()
         else:
+            self.soc_progress.setVisible(False)
+            self.soc_progress.setRange(0, 1)
             if QApplication.overrideCursor() is not None:
                 QApplication.restoreOverrideCursor()
+
+    def _on_ioc_progress(self, message: str) -> None:
+        self.ioc_summary_label.setText(message)
+        self._set_banner(self.ioc_run_status, message, "info")
+
+    def _on_soc_progress(self, message: str) -> None:
+        self.soc_summary_label.setText(message)
+        self._set_banner(self.soc_run_status, message, "info")
 
     def _provider_lookup_url(self, provider: str, ioc: str, ioc_type: str) -> str | None:
         value = ioc.strip()
@@ -816,6 +1039,31 @@ class DesktopSecurityApp(QMainWindow):
         rlay.addStretch(1)
         alay.addWidget(row)
         lay.addWidget(actions_card)
+        lay.addSpacing(4)
+
+        activity_card, activity_lay = _card("Recent Activity")
+        self.home_recent_activity = QLabel("No session activity yet. Run an IOC scan or SOC analysis.")
+        self.home_recent_activity.setProperty("class", "summary")
+        self.home_recent_activity.setWordWrap(True)
+        activity_lay.addWidget(self.home_recent_activity)
+        lay.addWidget(activity_card)
+
+        summary_row, srow_lay = _hrow()
+        srow_lay.setSpacing(12)
+        self.home_ioc_summary = QLabel("No IOC scan yet.")
+        self.home_ioc_summary.setWordWrap(True)
+        self.home_ioc_summary.setProperty("class", "summary")
+        self.home_soc_summary = QLabel("No SOC analysis yet.")
+        self.home_soc_summary.setWordWrap(True)
+        self.home_soc_summary.setProperty("class", "summary")
+
+        ioc_summary_card, ioc_summary_lay = _card("Last IOC Scan")
+        ioc_summary_lay.addWidget(self.home_ioc_summary)
+        soc_summary_card, soc_summary_lay = _card("Last SOC Analysis")
+        soc_summary_lay.addWidget(self.home_soc_summary)
+        srow_lay.addWidget(ioc_summary_card, 1)
+        srow_lay.addWidget(soc_summary_card, 1)
+        lay.addWidget(summary_row)
         lay.addStretch(1)
         return page
 
@@ -859,6 +1107,8 @@ class DesktopSecurityApp(QMainWindow):
         browse.clicked.connect(self._browse_ioc_file)
         clear = _btn("Clear", "ghost")
         clear.clicked.connect(self._clear_ioc_file)
+        self.ioc_browse_btn = browse
+        self.ioc_clear_file_btn = clear
         flay.addWidget(self.ioc_file_label, 1)
         flay.addWidget(browse)
         flay.addWidget(clear)
@@ -906,6 +1156,14 @@ class DesktopSecurityApp(QMainWindow):
         alay.addStretch(1)
         lay.addWidget(actions_row)
 
+        self.ioc_run_status = QLabel("IOC scanner idle.")
+        self._set_banner(self.ioc_run_status, "IOC scanner idle.", "info")
+        self.ioc_progress = QProgressBar()
+        self.ioc_progress.setVisible(False)
+        self.ioc_progress.setTextVisible(False)
+        lay.addWidget(self.ioc_run_status)
+        lay.addWidget(self.ioc_progress)
+
         # -- results card --
         res_card, res = _card("Results")
         self.ioc_summary_label = QLabel("No IOC scan has been run in this session.")
@@ -919,21 +1177,32 @@ class DesktopSecurityApp(QMainWindow):
             "Provider Summary", "Errors",
         ])
         for col, width in (
-            (0, 120),
-            (1, 110),
-            (2, 110),
-            (3, 90),
-            (4, 70),
+            (0, 180),
+            (1, 105),
+            (2, 105),
+            (3, 100),
+            (4, 60),
             (5, 95),
             (6, 95),
             (7, 80),
             (8, 90),
-            (9, 170),
+            (9, 260),
             (10, 70),
         ):
             self.ioc_table.setColumnWidth(col, width)
         self.ioc_table.cellClicked.connect(self._on_ioc_table_cell_clicked)
+        self.ioc_table.itemSelectionChanged.connect(self._update_ioc_detail_panel)
         res.addWidget(self.ioc_table)
+
+        self.ioc_detail_label = QLabel("Row Details")
+        self.ioc_detail_label.setProperty("class", "cardTitle")
+        self.ioc_detail_text = QTextEdit()
+        self.ioc_detail_text.setReadOnly(True)
+        self.ioc_detail_text.setProperty("class", "detailBox")
+        self.ioc_detail_text.setMinimumHeight(180)
+        self.ioc_detail_text.setText("Select a result row to view full details.")
+        res.addWidget(self.ioc_detail_label)
+        res.addWidget(self.ioc_detail_text)
         lay.addWidget(res_card, 1)
         return page
 
@@ -972,6 +1241,8 @@ class DesktopSecurityApp(QMainWindow):
         browse.clicked.connect(self._browse_soc_file)
         clear = _btn("Clear", "ghost")
         clear.clicked.connect(self._clear_soc_file)
+        self.soc_browse_btn = browse
+        self.soc_clear_file_btn = clear
         flay.addWidget(self.soc_file_label, 1)
         flay.addWidget(browse)
         flay.addWidget(clear)
@@ -1017,14 +1288,38 @@ class DesktopSecurityApp(QMainWindow):
         alay.addStretch(1)
         lay.addWidget(actions_row)
 
+        self.soc_run_status = QLabel("SOC analysis idle.")
+        self._set_banner(self.soc_run_status, "SOC analysis idle.", "info")
+        self.soc_progress = QProgressBar()
+        self.soc_progress.setVisible(False)
+        self.soc_progress.setTextVisible(False)
+        lay.addWidget(self.soc_run_status)
+        lay.addWidget(self.soc_progress)
+
         # -- summary --
         self.soc_summary_label = QLabel("No SOC analysis result available.")
         self.soc_summary_label.setProperty("class", "summary")
         self.soc_summary_label.setWordWrap(True)
         lay.addWidget(self.soc_summary_label)
 
+        soc_top_card, soc_top_lay = _card("Analysis Summary")
+        self.soc_top_technique = QLabel("Technique: N/A")
+        self.soc_top_confidence = QLabel("Confidence: N/A")
+        self.soc_top_source = QLabel("Mapping Source: N/A")
+        self.soc_top_enrichment = QLabel("IOC Enrichment: Not used")
+        for label in (
+            self.soc_top_technique,
+            self.soc_top_confidence,
+            self.soc_top_source,
+            self.soc_top_enrichment,
+        ):
+            label.setProperty("class", "summary")
+            soc_top_lay.addWidget(label)
+        lay.addWidget(soc_top_card)
+
         # -- collapsible result sections --
-        sec_entities = _Collapsible("Extracted Entities", expanded=True)
+        sec_entities = _Collapsible("Extracted Entities", expanded=False)
+        self.soc_section_entities = sec_entities
         self.soc_entities_table = _table(
             ["Type", "Value", "Evidence", "Start", "End"],
         )
@@ -1032,6 +1327,7 @@ class DesktopSecurityApp(QMainWindow):
         lay.addWidget(sec_entities)
 
         sec_mitre = _Collapsible("MITRE ATT&CK Mapping")
+        self.soc_section_mitre = sec_mitre
         self.soc_mitre_table = _table([
             "Technique ID", "Technique Name", "Confidence", "Rationale", "Evidence",
         ])
@@ -1039,6 +1335,7 @@ class DesktopSecurityApp(QMainWindow):
         lay.addWidget(sec_mitre)
 
         sec_epc = _Collapsible("EPC \u2014 Explain / Plan / Checklist")
+        self.soc_section_epc = sec_epc
         self.soc_epc_text = QTextEdit()
         self.soc_epc_text.setReadOnly(True)
         self.soc_epc_text.setMinimumHeight(120)
@@ -1046,6 +1343,7 @@ class DesktopSecurityApp(QMainWindow):
         lay.addWidget(sec_epc)
 
         sec_enrich = _Collapsible("IOC Enrichment")
+        self.soc_section_enrichment = sec_enrich
         self.soc_enrichment_table = _table(
             ["IOC", "Type", "Status", "Score", "Provider Summary"],
         )
@@ -1066,30 +1364,38 @@ class DesktopSecurityApp(QMainWindow):
         lay.addWidget(title)
         lay.addWidget(sub)
 
-        # -- providers card --
-        prov_card, prov = _card("Providers")
+        # -- providers + keys card --
+        prov_card, prov = _card("Providers & API Keys")
         self.provider_checkboxes: dict[str, QCheckBox] = {}
-        for provider in PROVIDER_ORDER:
-            cb = QCheckBox(f"Enable {provider}")
-            cb.setChecked(True)
-            self.provider_checkboxes[provider] = cb
-            prov.addWidget(cb)
-        lay.addWidget(prov_card)
-
-        # -- api keys card --
-        api_card, api_lay = _card("API Keys")
-        api_form = QFormLayout()
-        api_form.setSpacing(10)
         self.api_key_inputs: dict[str, QLineEdit] = {}
+        self.provider_key_status_labels: dict[str, QLabel] = {}
         for provider in PROVIDER_ORDER:
+            row = QWidget()
+            row_lay = QVBoxLayout(row)
+            row_lay.setContentsMargins(0, 2, 0, 6)
+            row_lay.setSpacing(4)
+
+            top_row, top_lay = _hrow()
             le = QLineEdit()
             le.setEchoMode(QLineEdit.EchoMode.Password)
             le.setPlaceholderText(f"Enter {provider} API key")
             le.setMaximumWidth(400)
+            le.textChanged.connect(self._update_provider_key_statuses)
+
+            cb = QCheckBox(f"Enable {provider}")
+            cb.setChecked(True)
+            self.provider_checkboxes[provider] = cb
             self.api_key_inputs[provider] = le
-            api_form.addRow(f"{provider}:", le)
-        api_lay.addLayout(api_form)
-        lay.addWidget(api_card)
+            status = QLabel("")
+            status.setProperty("class", "inlineStatus")
+            self.provider_key_status_labels[provider] = status
+
+            top_lay.addWidget(cb)
+            top_lay.addWidget(status, 1)
+            row_lay.addWidget(top_row)
+            row_lay.addWidget(le)
+            prov.addWidget(row)
+        lay.addWidget(prov_card)
 
         # -- session options card --
         opt_card, opt_lay = _card("Session Options")
@@ -1114,6 +1420,12 @@ class DesktopSecurityApp(QMainWindow):
         self.settings_status_label.setProperty("class", "summary")
         self.settings_status_label.setWordWrap(True)
         lay.addWidget(self.settings_status_label)
+        self.settings_info_label = QLabel(
+            "Saved settings are loaded at startup. Applied keys are used in this session.",
+        )
+        self.settings_info_label.setProperty("class", "inlineStatus")
+        self.settings_info_label.setWordWrap(True)
+        lay.addWidget(self.settings_info_label)
         lay.addStretch(1)
         return page
 
@@ -1181,69 +1493,103 @@ class DesktopSecurityApp(QMainWindow):
     # ── IOC scan ─────────────────────────────────────────────────────────
 
     def _run_ioc_scan(self) -> None:
-        self._set_ioc_loading(True, "Scanning IOCs and querying providers...")
-        try:
-            iocs = collect_iocs(
-                single_ioc=self.ioc_single_input.text(),
-                bulk_text=self.ioc_bulk_input.toPlainText(),
-                file_path=self.ioc_file_path,
-            )
-            if not iocs:
-                QMessageBox.warning(
-                    self, "No IOC Input",
-                    "Enter an IOC, paste bulk data, or upload an IOC file.",
-                )
-                return
+        if self._ioc_thread is not None and self._ioc_thread.isRunning():
+            return
 
-            providers = dict(self.settings_state.providers)
-            if not self.ioc_use_providers.isChecked():
-                providers = {name: False for name in PROVIDER_ORDER}
-            manual_type = str(self.ioc_type_combo.currentData())
-            manual_override = None if manual_type == "auto" else manual_type
+        iocs = collect_iocs(
+            single_ioc=self.ioc_single_input.text(),
+            bulk_text=self.ioc_bulk_input.toPlainText(),
+            file_path=self.ioc_file_path,
+        )
+        if not iocs:
+            QMessageBox.warning(
+                self, "No IOC Input",
+                "Enter an IOC, paste bulk data, or upload an IOC file.",
+            )
+            return
 
-            rows = scan_iocs(
-                iocs,
-                manual_ioc_type=manual_override,
-                providers=providers,
-                api_keys=dict(self.settings_state.api_keys),
+        providers = dict(self.settings_state.providers)
+        if not self.ioc_use_providers.isChecked():
+            providers = {name: False for name in PROVIDER_ORDER}
+        manual_type = str(self.ioc_type_combo.currentData())
+        manual_override = None if manual_type == "auto" else manual_type
+
+        self._set_ioc_loading(True, f"Scanning IOC 1 of {len(iocs)}...")
+        self._ioc_thread = QThread(self)
+        self._ioc_worker = _BackgroundTaskWorker(
+            _scan_iocs_background,
+            task_kwargs={
+                "iocs": iocs,
+                "manual_ioc_type": manual_override,
+                "providers": providers,
+                "api_keys": dict(self.settings_state.api_keys),
+            },
+        )
+        self._ioc_worker.moveToThread(self._ioc_thread)
+        self._ioc_thread.started.connect(self._ioc_worker.run)
+        self._ioc_worker.progress.connect(self._on_ioc_progress)
+        self._ioc_worker.finished.connect(self._on_ioc_scan_finished)
+        self._ioc_worker.failed.connect(self._on_ioc_scan_failed)
+        self._ioc_worker.finished.connect(self._ioc_thread.quit)
+        self._ioc_worker.failed.connect(self._ioc_thread.quit)
+        self._ioc_thread.finished.connect(self._ioc_worker.deleteLater)
+        self._ioc_thread.finished.connect(self._on_ioc_worker_thread_finished)
+        self._ioc_thread.finished.connect(self._ioc_thread.deleteLater)
+        self._ioc_thread.start()
+
+    def _on_ioc_scan_finished(self, rows: list[dict[str, Any]]) -> None:
+        self.last_ioc_rows = rows
+        self._populate_ioc_table(rows)
+        summary = summarize_ioc_rows(rows)
+        summary_text = (
+            "Total: {total}  |  Malicious: {malicious}  |  Suspicious: {suspicious}  |  "
+            "Clean: {clean}  |  Unknown: {unknown}  |  Errors: {error_rows}".format(
+                **summary,
             )
-            self.last_ioc_rows = rows
-            self._populate_ioc_table(rows)
-            summary = summarize_ioc_rows(rows)
-            summary_text = (
-                "Total: {total}  |  Malicious: {malicious}  |  Suspicious: {suspicious}  |  "
-                "Clean: {clean}  |  Unknown: {unknown}  |  Errors: {error_rows}".format(
-                    **summary,
-                )
-            )
-            if summary["error_rows"] > 0:
-                all_errors = []
-                for r in rows:
-                    all_errors.extend(str(e) for e in (r.get("errors") or []))
-                if all_errors:
-                    summary_text += "\n\u26A0  " + "  |  ".join(all_errors)
-            self.ioc_summary_label.setText(summary_text)
-            self._append_history(
-                "IOC scan", f"Scanned {len(rows)} IOC(s).",
-                {"summary": summary, "rows": rows},
-            )
-            self._update_home_metrics()
-        finally:
-            self._set_ioc_loading(False)
+        )
+        if summary["error_rows"] > 0:
+            all_errors = []
+            for row in rows:
+                all_errors.extend(str(err) for err in (row.get("errors") or []))
+            if all_errors:
+                summary_text += "\n\u26A0  " + "  |  ".join(all_errors)
+        self.ioc_summary_label.setText(summary_text)
+        self._set_banner(
+            self.ioc_run_status,
+            f"IOC scan complete: {summary['total']} rows, {summary['malicious']} malicious.",
+            "success",
+        )
+        self._append_history(
+            "IOC scan", f"Scanned {len(rows)} IOC(s).",
+            {"summary": summary, "rows": rows},
+        )
+        self._update_home_metrics()
+        self._set_ioc_loading(False)
+
+    def _on_ioc_scan_failed(self, message: str) -> None:
+        error = message or "IOC scan failed."
+        QMessageBox.warning(self, "IOC Scan Failed", error)
+        self.ioc_summary_label.setText(error)
+        self._set_banner(self.ioc_run_status, f"IOC scan failed: {error}", "danger")
+        self._set_ioc_loading(False)
+
+    def _on_ioc_worker_thread_finished(self) -> None:
+        self._ioc_worker = None
+        self._ioc_thread = None
 
     def _populate_ioc_table(self, rows: list[dict[str, Any]]) -> None:
         self.ioc_table.setRowCount(0)
         for row in rows:
             idx = self.ioc_table.rowCount()
             self.ioc_table.insertRow(idx)
-            self.ioc_table.setItem(idx, 0, QTableWidgetItem(str(row.get("ioc", ""))))
+            ioc_item = QTableWidgetItem(str(row.get("ioc", "")))
+            ioc_item.setData(Qt.ItemDataRole.UserRole, row)
+            self.ioc_table.setItem(idx, 0, ioc_item)
             self.ioc_table.setItem(idx, 1, QTableWidgetItem(str(row.get("detected_type", ""))))
             self.ioc_table.setItem(idx, 2, QTableWidgetItem(str(row.get("effective_type", ""))))
             self.ioc_table.setItem(idx, 3, _status_item(str(row.get("status", "unknown"))))
 
-            score = QTableWidgetItem(str(row.get("score", 0)))
-            score.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.ioc_table.setItem(idx, 4, score)
+            self.ioc_table.setItem(idx, 4, _score_item(row.get("score", 0)))
 
             effective_type = str(row.get("effective_type", "unknown"))
             ioc_value = str(row.get("ioc", ""))
@@ -1256,9 +1602,9 @@ class DesktopSecurityApp(QMainWindow):
                     status_item.setToolTip(f"Open in {provider_key}")
                 self.ioc_table.setItem(idx, col, status_item)
 
-            prov_summary = str(row.get("provider_summary", ""))
+            prov_summary = _format_provider_summary(str(row.get("provider_summary", "")))
             prov_item = QTableWidgetItem(prov_summary)
-            prov_item.setToolTip(prov_summary)
+            prov_item.setToolTip(str(row.get("provider_summary", "")))
             self.ioc_table.setItem(idx, 9, prov_item)
 
             error_list = row.get("errors") or []
@@ -1269,54 +1615,137 @@ class DesktopSecurityApp(QMainWindow):
             if error_text:
                 errors.setToolTip(error_text)
                 errors.setForeground(QColor(_DANGER))
+            else:
+                errors.setForeground(QColor(_TEXT2))
             self.ioc_table.setItem(idx, 10, errors)
+
+            _, accent_color = _status_tone(str(row.get("status", "unknown")))
+            for col in range(self.ioc_table.columnCount()):
+                table_item = self.ioc_table.item(idx, col)
+                if table_item is None:
+                    continue
+                if col == 0:
+                    table_item.setBackground(QColor(accent_color).lighter(160))
+                table_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignCenter if col in {3, 4, 5, 6, 7, 8, 10}
+                    else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                )
+        self._update_ioc_detail_panel()
+
+    def _update_ioc_detail_panel(self) -> None:
+        selected = self.ioc_table.selectedItems()
+        if not selected:
+            self.ioc_detail_text.setText("Select a result row to view full details.")
+            return
+        row_index = selected[0].row()
+        row_item = self.ioc_table.item(row_index, 0)
+        if row_item is None:
+            self.ioc_detail_text.setText("Select a result row to view full details.")
+            return
+        row_data = row_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row_data, dict):
+            self.ioc_detail_text.setText("No structured detail available for this row.")
+            return
+        self.ioc_detail_text.setText(_format_ioc_detail_text(row_data))
 
     # ── SOC analysis ─────────────────────────────────────────────────────
 
     def _run_soc_analysis(self) -> None:
-        self._set_soc_loading(True, "Analyzing SOC log and generating response...")
-        try:
-            selected_log = load_soc_log_inputs(
-                self.soc_raw_log_input.toPlainText(), self.soc_file_path,
-            )
-            if not selected_log:
-                QMessageBox.warning(
-                    self, "No Log Input",
-                    "Paste raw log text or upload a log file.",
-                )
-                return
+        if self._soc_thread is not None and self._soc_thread.isRunning():
+            return
 
-            payload = analyze_soc_log(
-                selected_log,
-                model_path=self.soc_model_path_input.text().strip(),
-                enrich_iocs=self.soc_enrich_toggle.isChecked(),
-                ioc_providers=dict(self.settings_state.providers),
-                ioc_api_keys=dict(self.settings_state.api_keys),
+        selected_log = load_soc_log_inputs(
+            self.soc_raw_log_input.toPlainText(), self.soc_file_path,
+        )
+        if not selected_log:
+            QMessageBox.warning(
+                self, "No Log Input",
+                "Paste raw log text or upload a log file.",
             )
-            if not payload.get("ok"):
-                message = str(payload.get("error", "SOC analysis failed"))
-                QMessageBox.warning(self, "Analysis Failed", message)
-                self.soc_summary_label.setText(message)
-                return
+            return
 
-            self.last_soc_payload = payload
-            self._populate_soc_sections(payload)
-            summary = payload.get("summary", {})
-            self.soc_summary_label.setText(
-                "Technique: {technique_id} ({technique_name})  |  "
-                "Confidence: {confidence:.3f}  |  "
-                "Source: {mapping_source}  |  Entities: {entity_count}".format(
-                    technique_id=summary.get("technique_id", "N/A"),
-                    technique_name=summary.get("technique_name", "N/A"),
-                    confidence=float(summary.get("confidence", 0.0) or 0.0),
-                    mapping_source=summary.get("mapping_source", "unknown"),
-                    entity_count=int(summary.get("entity_count", 0) or 0),
-                ),
-            )
-            self._append_history("SOC analysis", "Analyzed one log event.", payload)
-            self._update_home_metrics()
-        finally:
+        enrich_iocs = self.soc_enrich_toggle.isChecked()
+        status_message = "Analyzing log with enrichment..." if enrich_iocs else "Analyzing log..."
+        self._set_soc_loading(True, status_message)
+        self._soc_thread = QThread(self)
+        self._soc_worker = _BackgroundTaskWorker(
+            _analyze_soc_background,
+            task_kwargs={
+                "selected_log": selected_log,
+                "model_path": self.soc_model_path_input.text().strip(),
+                "enrich_iocs": enrich_iocs,
+                "ioc_providers": dict(self.settings_state.providers),
+                "ioc_api_keys": dict(self.settings_state.api_keys),
+            },
+        )
+        self._soc_worker.moveToThread(self._soc_thread)
+        self._soc_thread.started.connect(self._soc_worker.run)
+        self._soc_worker.progress.connect(self._on_soc_progress)
+        self._soc_worker.finished.connect(self._on_soc_analysis_finished)
+        self._soc_worker.failed.connect(self._on_soc_analysis_failed)
+        self._soc_worker.finished.connect(self._soc_thread.quit)
+        self._soc_worker.failed.connect(self._soc_thread.quit)
+        self._soc_thread.finished.connect(self._soc_worker.deleteLater)
+        self._soc_thread.finished.connect(self._on_soc_worker_thread_finished)
+        self._soc_thread.finished.connect(self._soc_thread.deleteLater)
+        self._soc_thread.start()
+
+    def _on_soc_analysis_finished(self, payload: dict[str, Any]) -> None:
+        if not payload.get("ok"):
+            message = str(payload.get("error", "SOC analysis failed"))
+            QMessageBox.warning(self, "Analysis Failed", message)
+            self.soc_summary_label.setText(message)
+            self._set_banner(self.soc_run_status, f"SOC analysis failed: {message}", "danger")
             self._set_soc_loading(False)
+            return
+
+        self.last_soc_payload = payload
+        self._populate_soc_sections(payload)
+        summary = payload.get("summary", {})
+        enrich_used = bool(self.soc_enrich_toggle.isChecked())
+        confidence_value = float(summary.get("confidence", 0.0) or 0.0)
+        self.soc_summary_label.setText(
+            "Technique: {technique_id} ({technique_name})  |  "
+            "Confidence: {confidence:.3f}  |  "
+            "Source: {mapping_source}  |  Entities: {entity_count}".format(
+                technique_id=summary.get("technique_id", "N/A"),
+                technique_name=summary.get("technique_name", "N/A"),
+                confidence=confidence_value,
+                mapping_source=summary.get("mapping_source", "unknown"),
+                entity_count=int(summary.get("entity_count", 0) or 0),
+            ),
+        )
+        self.soc_top_technique.setText(
+            f"Technique: {summary.get('technique_id', 'N/A')} ({summary.get('technique_name', 'N/A')})",
+        )
+        self.soc_top_confidence.setText(f"Confidence: {confidence_value:.3f}")
+        self.soc_top_source.setText(f"Mapping Source: {summary.get('mapping_source', 'unknown')}")
+        self.soc_top_enrichment.setText(
+            f"IOC Enrichment: {'Used' if enrich_used else 'Not used'}",
+        )
+        self.soc_section_mitre.set_expanded(True)
+        self.soc_section_entities.set_expanded(True)
+        self.soc_section_epc.set_expanded(False)
+        self.soc_section_enrichment.set_expanded(enrich_used)
+        self._set_banner(
+            self.soc_run_status,
+            f"SOC analysis complete: {summary.get('technique_id', 'N/A')} mapped.",
+            "success",
+        )
+        self._append_history("SOC analysis", "Analyzed one log event.", payload)
+        self._update_home_metrics()
+        self._set_soc_loading(False)
+
+    def _on_soc_analysis_failed(self, message: str) -> None:
+        error = message or "SOC analysis failed."
+        QMessageBox.warning(self, "Analysis Failed", error)
+        self.soc_summary_label.setText(error)
+        self._set_banner(self.soc_run_status, f"SOC analysis failed: {error}", "danger")
+        self._set_soc_loading(False)
+
+    def _on_soc_worker_thread_finished(self) -> None:
+        self._soc_worker = None
+        self._soc_thread = None
 
     def _populate_soc_sections(self, payload: dict[str, Any]) -> None:
         result = payload.get("result", {})
@@ -1341,9 +1770,7 @@ class DesktopSecurityApp(QMainWindow):
             self.soc_mitre_table.insertRow(r)
             self.soc_mitre_table.setItem(r, 0, QTableWidgetItem(str(mapping.get("technique_id", ""))))
             self.soc_mitre_table.setItem(r, 1, QTableWidgetItem(str(mapping.get("technique_name", ""))))
-            conf = QTableWidgetItem(str(mapping.get("confidence", "")))
-            conf.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.soc_mitre_table.setItem(r, 2, conf)
+            self.soc_mitre_table.setItem(r, 2, _score_item(int(float(mapping.get("confidence", 0)) * 100)))
             self.soc_mitre_table.setItem(r, 3, QTableWidgetItem(str(mapping.get("rationale", ""))))
             evidence = ", ".join(str(item) for item in mapping.get("evidence_refs", []))
             self.soc_mitre_table.setItem(r, 4, QTableWidgetItem(evidence))
@@ -1372,10 +1799,10 @@ class DesktopSecurityApp(QMainWindow):
             self.soc_enrichment_table.setItem(r, 0, QTableWidgetItem(str(item.get("ioc", ""))))
             self.soc_enrichment_table.setItem(r, 1, QTableWidgetItem(str(item.get("type", ""))))
             self.soc_enrichment_table.setItem(r, 2, _status_item(str(item.get("status", "unknown"))))
-            score_item = QTableWidgetItem(str(item.get("score", 0)))
-            score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.soc_enrichment_table.setItem(r, 3, score_item)
-            self.soc_enrichment_table.setItem(r, 4, QTableWidgetItem(provider_summary))
+            self.soc_enrichment_table.setItem(r, 3, _score_item(item.get("score", 0)))
+            summary_item = QTableWidgetItem(_format_provider_summary(provider_summary))
+            summary_item.setToolTip(provider_summary)
+            self.soc_enrichment_table.setItem(r, 4, summary_item)
 
     # ── settings ─────────────────────────────────────────────────────────
 
@@ -1391,6 +1818,19 @@ class DesktopSecurityApp(QMainWindow):
                 )
         self.history_toggle.setChecked(bool(self.settings_state.history_enabled))
         self._history_nav_btn.setVisible(self.settings_state.history_enabled)
+        self._update_provider_key_statuses()
+
+    def _update_provider_key_statuses(self) -> None:
+        for provider in PROVIDER_ORDER:
+            status_label = self.provider_key_status_labels.get(provider)
+            line_edit = self.api_key_inputs.get(provider)
+            if status_label is None or line_edit is None:
+                continue
+            has_key = bool(line_edit.text().strip())
+            status_label.setText("Key entered" if has_key else "Key missing")
+            status_label.setStyleSheet(
+                f"color: {(_ACCENT if has_key else _WARNING)}; font-weight: 600;",
+            )
 
     def _apply_settings(self) -> None:
         providers = {
@@ -1413,6 +1853,7 @@ class DesktopSecurityApp(QMainWindow):
             self.settings_status_label.setText("Settings saved and applied.")
         else:
             self.settings_status_label.setText("Settings applied, but could not be saved to disk.")
+        self._update_provider_key_statuses()
         self._update_home_metrics()
 
     # ── history ──────────────────────────────────────────────────────────
@@ -1522,6 +1963,38 @@ class DesktopSecurityApp(QMainWindow):
         self.home_history_metric.setText(str(len(self.history_entries)))
         self.home_ioc_metric.setText(str(len(self.last_ioc_rows)))
         self.home_soc_metric.setText("Yes" if self.last_soc_payload else "No")
+        if self.history_entries:
+            latest = self.history_entries[-1]
+            self.home_recent_activity.setText(
+                f"{latest.get('timestamp', '')}  |  {latest.get('action', '')}  |  {latest.get('summary', '')}",
+            )
+        else:
+            self.home_recent_activity.setText(
+                "No session activity yet. Run an IOC scan or SOC analysis.",
+            )
+
+        if self.last_ioc_rows:
+            ioc_summary = summarize_ioc_rows(self.last_ioc_rows)
+            self.home_ioc_summary.setText(
+                "Total: {total} | Malicious: {malicious} | Suspicious: {suspicious} | "
+                "Clean: {clean} | Unknown: {unknown}".format(**ioc_summary),
+            )
+        else:
+            self.home_ioc_summary.setText("No IOC scan yet.")
+
+        if self.last_soc_payload and self.last_soc_payload.get("summary"):
+            summary = self.last_soc_payload.get("summary", {})
+            self.home_soc_summary.setText(
+                "Technique: {technique_id} ({technique_name}) | Confidence: {confidence:.3f} | "
+                "Source: {mapping_source}".format(
+                    technique_id=summary.get("technique_id", "N/A"),
+                    technique_name=summary.get("technique_name", "N/A"),
+                    confidence=float(summary.get("confidence", 0.0) or 0.0),
+                    mapping_source=summary.get("mapping_source", "unknown"),
+                ),
+            )
+        else:
+            self.home_soc_summary.setText("No SOC analysis yet.")
 
 
 def main() -> int:

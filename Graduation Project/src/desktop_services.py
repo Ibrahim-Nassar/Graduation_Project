@@ -375,13 +375,47 @@ def analyze_soc_log(
             "mapping_source": dump["audit"].get("mapping_source"),
             "entity_count": len(dump["entities"]),
         }
-        return {"ok": True, "summary": summary, "result": dump}
+        out = {"ok": True, "summary": summary, "result": dump}
+        out["analyst_brief"] = generate_analyst_brief(out)
+        return out
     except ValidationError as exc:
-        return {
+        partial_result: dict[str, Any] = {}
+        try:
+            event = pipeline_module._normalize_event(value)
+            entities = pipeline_module._extract_entities(event.raw_event, event.normalized_event)
+            partial_result = {
+                "entities": [entity.model_dump(mode="json") for entity in entities],
+                "attack_mapping": [],
+                "epc": {},
+                "audit": {
+                    "mapping_source": "none",
+                    "normalized_event": event.normalized_event,
+                    "entity_count": len(entities),
+                    "mapping_count": 0,
+                },
+            }
+        except Exception:
+            partial_result = {}
+        summary = {
+            "technique_id": "N/A",
+            "technique_name": "Not mapped",
+            "confidence": 0.0,
+            "mapping_source": "none",
+            "entity_count": int(partial_result.get("audit", {}).get("entity_count", 0) or 0)
+            if isinstance(partial_result, dict)
+            else 0,
+        }
+        out = {
             "ok": False,
+            "summary": summary,
+            "result": partial_result,
             "error": "No ATT&CK mapping could be produced for this log.",
+            "reason": "no_mapping",
+            "partial_result": partial_result,
             "details": exc.errors(),
         }
+        out["analyst_brief"] = generate_analyst_brief(out)
+        return out
     except Exception as exc:  # pragma: no cover - UI safety net
         return {"ok": False, "error": str(exc)}
 
@@ -423,10 +457,28 @@ def export_ioc_csv(path: str, rows: list[dict[str, Any]]) -> None:
 def export_soc_csv(path: str, payload: dict[str, Any]) -> None:
     rows: list[dict[str, str]] = []
     summary = payload.get("summary", {})
+    result = payload.get("result", {})
+    if not isinstance(result, dict):
+        result = {}
+    if not result and isinstance(payload.get("partial_result"), dict):
+        result = payload.get("partial_result", {})
+
+    if not summary and isinstance(result, dict):
+        audit = result.get("audit", {}) if isinstance(result.get("audit"), dict) else {}
+        summary = {
+            "technique_id": "N/A",
+            "technique_name": "Not mapped",
+            "confidence": 0.0,
+            "mapping_source": str(audit.get("mapping_source", "none")),
+            "entity_count": int(audit.get("entity_count", len(result.get("entities", []) or [])) or 0),
+        }
+    analyst_brief = str(payload.get("analyst_brief", "")).strip()
+    if analyst_brief:
+        rows.append({"section": "analyst_brief", "item": "brief", "value": analyst_brief})
+
     for key, value in summary.items():
         rows.append({"section": "summary", "item": key, "value": str(value)})
 
-    result = payload.get("result", {})
     for index, entity in enumerate(result.get("entities", []), start=1):
         rows.append({"section": "entity", "item": f"{index}:{entity.get('type', 'unknown')}", "value": str(entity.get("value", ""))})
 
@@ -466,6 +518,87 @@ def export_soc_csv(path: str, payload: dict[str, Any]) -> None:
         writer = csv.DictWriter(handle, fieldnames=["section", "item", "value"])
         writer.writeheader()
         writer.writerows(rows)
+
+
+def generate_analyst_brief(payload: dict[str, Any]) -> str:
+    """Build a deterministic, template-based analyst brief from SOC analysis results.
+
+    Returns a compact 2-4 sentence narrative suitable for display at the top
+    of the SOC results area.  No LLM is used; all text is derived from
+    structured fields already present in the payload.
+    """
+    summary = payload.get("summary", {})
+    if not isinstance(summary, dict):
+        summary = {}
+    result = payload.get("result", {})
+    if not isinstance(result, dict):
+        result = {}
+    if not result and isinstance(payload.get("partial_result"), dict):
+        result = payload.get("partial_result", {})
+
+    technique_id = str(summary.get("technique_id", "N/A"))
+    technique_name = str(summary.get("technique_name", "N/A"))
+    mapping_source = str(summary.get("mapping_source", "none"))
+    confidence = float(summary.get("confidence", 0.0) or 0.0)
+    entity_count = int(summary.get("entity_count", 0) or 0)
+
+    entities = result.get("entities", []) if isinstance(result.get("entities"), list) else []
+    mappings = result.get("attack_mapping", []) if isinstance(result.get("attack_mapping"), list) else []
+    epc = result.get("epc", {}) if isinstance(result.get("epc"), dict) else {}
+
+    entity_labels = []
+    for entity in entities[:5]:
+        etype = str(entity.get("type", "")).strip()
+        evalue = str(entity.get("value", "")).strip()
+        if etype and evalue:
+            entity_labels.append(f"{etype} \u2018{evalue}\u2019")
+    entity_mention = ", ".join(entity_labels) if entity_labels else None
+
+    if technique_id == "N/A" or not mappings:
+        parts = ["Analysis completed but no MITRE ATT&CK mapping was produced for this log."]
+        if entity_mention:
+            parts.append(f"Extracted entities: {entity_mention}.")
+        elif entity_count > 0:
+            parts.append(f"{entity_count} entities were extracted but no technique pattern matched.")
+        else:
+            parts.append("No entities could be extracted from the input.")
+        parts.append(
+            "Recommended action: review extracted fields for missing context,"
+            " add correlated log lines, and re-analyze."
+        )
+        return " ".join(parts)
+
+    primary = mappings[0]
+    rationale = str(primary.get("rationale", "")).strip()
+    evidence_refs = primary.get("evidence_refs", []) if isinstance(primary.get("evidence_refs"), list) else []
+    evidence_summary = ", ".join(str(e) for e in evidence_refs[:3]) if evidence_refs else ""
+
+    parts: list[str] = []
+    if entity_mention:
+        parts.append(f"Log analysis identified activity involving {entity_mention}.")
+    else:
+        parts.append("Log analysis identified suspicious activity.")
+
+    source_qualifier = ""
+    if mapping_source == "ml_fallback":
+        source_qualifier = " (ML fallback \u2014 analyst review required)"
+    elif confidence < 0.6:
+        source_qualifier = " (low confidence \u2014 verify before action)"
+    parts.append(
+        f"Mapped to {technique_id} ({technique_name})"
+        f" at {confidence:.0%} confidence{source_qualifier}."
+    )
+
+    if rationale:
+        parts.append(f"Primary evidence: {rationale}")
+    elif evidence_summary:
+        parts.append(f"Key signals: {evidence_summary}.")
+
+    plan = epc.get("plan", []) if isinstance(epc.get("plan"), list) else []
+    if plan and str(plan[0]).strip():
+        parts.append(f"Recommended first action: {plan[0]}")
+
+    return " ".join(parts)
 
 
 def sanitize_api_keys(api_keys: dict[str, str]) -> dict[str, str]:

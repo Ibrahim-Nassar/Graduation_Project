@@ -59,7 +59,6 @@ class DesktopBackgroundTaskTests(unittest.TestCase):
         with patch("src.desktop_app.analyze_soc_log", return_value=expected_payload) as mocked:
             payload = _analyze_soc_background(
                 selected_log="raw-log",
-                model_path="",
                 enrich_iocs=True,
                 ioc_providers={"virustotal": False},
                 ioc_api_keys={"virustotal": "abc"},
@@ -68,7 +67,6 @@ class DesktopBackgroundTaskTests(unittest.TestCase):
 
         mocked.assert_called_once_with(
             "raw-log",
-            model_path="",
             enrich_iocs=True,
             ioc_providers={"virustotal": False},
             ioc_api_keys={"virustotal": "abc"},

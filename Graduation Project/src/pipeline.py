@@ -20,8 +20,18 @@ USERNAME_RE = re.compile(
 )
 PROCESS_RE = re.compile(r"\b([a-zA-Z0-9_.-]+\.exe)\b", re.IGNORECASE)
 FAILED_LOGIN_RE = re.compile(
-    r"(?i)(?:failed\s+(?:login|logon|authentication)|login\s+failed|invalid\s+password)"
+    r"(?i)(?:"
+    r"failed\s+(?:login|logon|log\s+on|authentication)"
+    r"|(?:login|authentication)\s+failed"
+    r"|failed\s+to\s+log\s+on"
+    r"|(?:an\s+)?account\s+failed\s+to\s+log\s+on"
+    r"|invalid\s+(?:password|credentials)"
+    r")"
 )
+EVENT_ID_4625_RE = re.compile(r"(?i)\bevent(?:_id|\s+id)?\s*(?:=|:)\s*4625\b")
+FOR_USER_RE = re.compile(r"(?i)\bfor\s+user\s+([a-zA-Z0-9._\\-]{2,})\b")
+ACCOUNT_NAME_RE = re.compile(r"(?i)\baccount\s+name\s*:\s*([a-zA-Z0-9._\\-]{2,})\b")
+IP_ADDRESS_RE = re.compile(r"(?i)\bip\s+address\s*:\s*((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))\b")
 KV_VALUE_RE = r"(?:\"([^\"]+)\"|'([^']+)'|([^\s,;]+))"
 TIMESTAMP_RE = re.compile(
     r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\b"
@@ -55,20 +65,123 @@ def _extract_timestamp(raw_log: str) -> str | None:
     return None
 
 
+def _extract_username_value(raw_log: str) -> str | None:
+    username = _extract_first_kv_value(
+        raw_log,
+        (
+            "username",
+            "user",
+            "user_name",
+            "account",
+            "account_name",
+            "accountname",
+            "targetusername",
+            "subjectusername",
+            "principal",
+            "login",
+            "acct",
+        ),
+    )
+    if username:
+        return username
+    for_user_match = FOR_USER_RE.search(raw_log)
+    if for_user_match:
+        return for_user_match.group(1)
+    account_name_match = ACCOUNT_NAME_RE.search(raw_log)
+    if account_name_match:
+        return account_name_match.group(1)
+    return None
+
+
+def _extract_source_ip_value(raw_log: str) -> str | None:
+    source_ip = _extract_first_kv_value(
+        raw_log,
+        (
+            "src_ip",
+            "source_ip",
+            "sourceip",
+            "src",
+            "ip",
+            "ipaddress",
+            "client_ip",
+            "clientip",
+            "remote_addr",
+            "remote_ip",
+            "caller_ip",
+        ),
+    )
+    if source_ip and IPV4_RE.fullmatch(source_ip):
+        return source_ip
+    ip_address_match = IP_ADDRESS_RE.search(raw_log)
+    if ip_address_match:
+        return ip_address_match.group(1)
+    fallback_match = IPV4_RE.search(raw_log)
+    if fallback_match:
+        return fallback_match.group(0)
+    return None
+
+
+def _extract_destination_ip_value(raw_log: str) -> str | None:
+    destination_ip = _extract_first_kv_value(
+        raw_log,
+        ("dst_ip", "destination_ip", "dest_ip", "dst", "target_ip", "destinationip"),
+    )
+    if destination_ip and IPV4_RE.fullmatch(destination_ip):
+        return destination_ip
+    return None
+
+
 def _extract_domain_value(raw_log: str) -> str | None:
-    domain = _extract_first_kv_value(raw_log, ("domain", "qname", "destination", "target"))
-    if domain and DOMAIN_RE.fullmatch(domain):
+    def _is_domain_candidate(value: str) -> bool:
+        lowered = value.strip().lower()
+        return bool(DOMAIN_RE.fullmatch(value)) and not lowered.endswith(".exe")
+
+    domain = _extract_first_kv_value(
+        raw_log,
+        (
+            "domain",
+            "fqdn",
+            "qname",
+            "query",
+            "query_name",
+            "dns_query",
+            "domain_name",
+            "host",
+            "hostname",
+            "destination",
+            "target",
+        ),
+    )
+    if domain and _is_domain_candidate(domain):
         return domain
-    match = DOMAIN_RE.search(raw_log)
-    if match:
-        return match.group(0)
+    for match in DOMAIN_RE.finditer(raw_log):
+        candidate = match.group(0)
+        if _is_domain_candidate(candidate):
+            return candidate
     return None
 
 
 def _extract_process_value(raw_log: str) -> str | None:
-    process = _extract_first_kv_value(raw_log, ("process", "proc", "image"))
+    process = _extract_first_kv_value(
+        raw_log,
+        (
+            "process",
+            "proc",
+            "image",
+            "process_name",
+            "imagename",
+            "new_process_name",
+            "newprocessname",
+            "application",
+        ),
+    )
     if process:
         return process
+    process_name_match = re.search(r"(?i)\bnew\s+process\s+name\s*:\s*([^\r\n;]+)", raw_log)
+    if process_name_match:
+        process_value = process_name_match.group(1).strip()
+        if process_value:
+            return process_value
     match = PROCESS_RE.search(raw_log)
     if match:
         return match.group(1)
@@ -80,25 +193,28 @@ def _extract_process_value(raw_log: str) -> str | None:
 def _normalize_event(raw_log: str) -> Event:
     normalized_event: dict[str, Any] = {}
     timestamp = _extract_timestamp(raw_log)
-    username = _extract_first_kv_value(raw_log, ("username", "user", "account", "login"))
+    username = _extract_username_value(raw_log)
     hostname = _extract_first_kv_value(raw_log, ("host", "hostname", "computer"))
     process = _extract_process_value(raw_log)
     command_line = _extract_first_kv_value(raw_log, ("cmdline", "command_line", "command", "cmd"))
-    source_ip = _extract_first_kv_value(raw_log, ("src_ip", "source_ip", "src"))
-    destination_ip = _extract_first_kv_value(raw_log, ("dst_ip", "destination_ip", "dest_ip", "dst"))
+    source_ip = _extract_source_ip_value(raw_log)
+    destination_ip = _extract_destination_ip_value(raw_log)
     domain = _extract_domain_value(raw_log)
+    failed_matches = list(FAILED_LOGIN_RE.finditer(raw_log))
+    event_4625_matches = list(EVENT_ID_4625_RE.finditer(raw_log))
+    failed_attempt_count = len(failed_matches) if failed_matches else len(event_4625_matches)
 
-    extracted_fields: dict[str, str | None] = {
+    extracted_fields: dict[str, Any] = {
         "timestamp": timestamp,
         "username": username,
         "hostname": hostname,
         "process": process,
         "command_line": command_line,
-        "source_ip": source_ip if source_ip and IPV4_RE.fullmatch(source_ip) else None,
-        "destination_ip": destination_ip
-        if destination_ip and IPV4_RE.fullmatch(destination_ip)
-        else None,
+        "source_ip": source_ip,
+        "destination_ip": destination_ip,
         "domain": domain,
+        "event_type": "failed_login" if failed_attempt_count > 0 else None,
+        "failed_attempt_count": failed_attempt_count if failed_attempt_count > 0 else None,
     }
 
     for key, value in extracted_fields.items():
@@ -167,15 +283,18 @@ def _extract_entities(raw_log: str, normalized_event: dict[str, Any]) -> list[En
         )
 
     for match in DOMAIN_RE.finditer(raw_log):
+        candidate = match.group(0)
+        if candidate.lower().endswith(".exe"):
+            continue
         _append_entity(
             entities,
             seen,
             Entity(
                 type="domain",
-                value=match.group(0),
+                value=candidate,
                 start=match.start(),
                 end=match.end(),
-                evidence_ref=match.group(0),
+                evidence_ref=candidate,
             ),
         )
 
@@ -290,10 +409,42 @@ def _build_attack_mappings(
             )
         )
 
-    failed_login_matches = list(FAILED_LOGIN_RE.finditer(raw_log))
-    failed_attempts = len(failed_login_matches)
-    if failed_attempts >= 3:
-        evidence_refs = [match.group(0) for match in failed_login_matches[:3]]
+    failed_evidence: list[str] = []
+    principal_counts: dict[str, int] = defaultdict(int)
+    source_ip_counts: dict[str, int] = defaultdict(int)
+    segments = [segment.strip() for segment in re.split(r"[\r\n;]+", raw_log) if segment.strip()]
+    if not segments:
+        segments = [raw_log]
+
+    for segment in segments:
+        failed_matches = list(FAILED_LOGIN_RE.finditer(segment))
+        event_4625_match = EVENT_ID_4625_RE.search(segment)
+        if not failed_matches and not event_4625_match:
+            continue
+
+        if failed_matches:
+            failed_evidence.extend(match.group(0) for match in failed_matches)
+        elif event_4625_match:
+            failed_evidence.append(event_4625_match.group(0))
+
+        principal = _extract_first_kv_value(segment, ("username", "user", "account", "login"))
+        if principal is None:
+            principal = _extract_username_value(segment)
+        if principal:
+            principal_counts[principal.lower()] += 1
+
+        source_ip = _extract_source_ip_value(segment)
+        if source_ip:
+            source_ip_counts[source_ip] += 1
+        else:
+            for ipv4_match in IPV4_RE.finditer(segment):
+                source_ip_counts[ipv4_match.group(0)] += 1
+
+    failed_attempts = len(failed_evidence)
+    repeated_principal = any(count >= 2 for count in principal_counts.values())
+    repeated_source_ip = any(count >= 2 for count in source_ip_counts.values())
+    if failed_attempts >= 3 or (failed_attempts >= 2 and (repeated_principal or repeated_source_ip)):
+        evidence_refs = failed_evidence[:3]
         mappings.append(
             AttackMapping(
                 technique_id="T1110",
@@ -307,61 +458,75 @@ def _build_attack_mappings(
     return mappings
 
 
-def _build_epc(primary_mapping: AttackMapping) -> EPC:
-    templates: dict[str, dict[str, list[str] | str | float]] = {
-        "T1059": {
-            "explain": "Encoded PowerShell execution may indicate script-based command execution by an adversary.",
-            "plan": [
-                "Isolate host and collect full PowerShell command history.",
-                "Decode command content and verify whether it is authorized administration activity.",
-            ],
-            "checklist": [
-                "Retrieve parent process and command-line telemetry.",
-                "Check user/session context and recent privilege changes.",
-            ],
-            "confidence": 0.9,
-        },
-        "T1071": {
-            "explain": "High-volume DNS requests to randomized subdomains can indicate C2 or exfiltration tunneling.",
-            "plan": [
-                "Identify source host and block suspicious domain at DNS controls.",
-                "Correlate DNS activity with outbound network sessions and data transfer volume.",
-            ],
-            "checklist": [
-                "Count unique subdomains queried per minute.",
-                "Validate whether destination domain is approved or known malicious.",
-            ],
-            "confidence": 0.85,
-        },
-        "T1110": {
-            "explain": "Repeated failed logins suggest possible brute-force credential guessing.",
-            "plan": [
-                "Temporarily lock targeted account(s) and enforce password reset.",
-                "Trace source IP and apply access controls or rate limiting.",
-            ],
-            "checklist": [
-                "Review authentication logs for successful follow-on login.",
-                "Confirm MFA status and policy enforcement for impacted account.",
-            ],
-            "confidence": 0.88,
-        },
-    }
+def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any]) -> EPC:
+    evidence_preview = ", ".join(primary_mapping.evidence_refs[:2]) if primary_mapping.evidence_refs else "no direct evidence"
+    username = str(normalized_event.get("username", "")).strip()
+    source_ip = str(normalized_event.get("source_ip", "")).strip()
+    domain = str(normalized_event.get("domain", "")).strip()
+    process = str(normalized_event.get("process", "")).strip()
+    failed_attempt_count = normalized_event.get("failed_attempt_count")
 
-    template = templates.get(
-        primary_mapping.technique_id,
-        {
-            "explain": "Suspicious activity requires triage and containment validation.",
-            "plan": ["Collect host and network evidence for escalation."],
-            "checklist": ["Verify impacted assets.", "Confirm containment status."],
-            "confidence": 0.5,
-        },
-    )
+    if primary_mapping.technique_id == "T1059":
+        process_hint = process or "powershell"
+        explain = (
+            f"Potential scripted command execution detected via PowerShell indicators. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            f"Isolate the host and collect process creation plus command-line telemetry for `{process_hint}`.",
+            "Decode and review encoded command content, then confirm whether activity matches approved administration.",
+        ]
+        checklist = [
+            "Validate parent-child process chain and execution user context.",
+            "Check for follow-on actions such as credential access, persistence, or suspicious outbound connections.",
+        ]
+        confidence = 0.9
+    elif primary_mapping.technique_id == "T1071":
+        domain_hint = domain or "observed DNS domains"
+        explain = (
+            f"DNS activity is consistent with application-layer tunneling patterns. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            f"Identify hosts querying `{domain_hint}` and apply DNS/network controls to contain suspicious traffic.",
+            "Correlate DNS query bursts with endpoint process telemetry and outbound session volume.",
+        ]
+        checklist = [
+            "Measure unique/randomized subdomain frequency over short time windows.",
+            "Validate whether queried domains are approved infrastructure or known malicious destinations.",
+        ]
+        confidence = 0.85
+    elif primary_mapping.technique_id == "T1110":
+        account_hint = username or "target account"
+        source_hint = source_ip or "source IP"
+        attempts_hint = str(failed_attempt_count) if failed_attempt_count is not None else "multiple"
+        explain = (
+            f"Repeated authentication failure signals suggest possible brute-force credential guessing. "
+            f"Evidence observed: {evidence_preview}; failed_attempt_count={attempts_hint}."
+        )
+        plan = [
+            f"Protect `{account_hint}` immediately (lock/reset as policy allows) and review all recent authentication outcomes.",
+            f"Investigate and rate-limit or block `{source_hint}` while validating whether attempts are malicious or misconfigured automation.",
+        ]
+        checklist = [
+            "Confirm whether a successful login followed the failed attempts.",
+            "Verify MFA enforcement and authentication policy coverage for impacted identities.",
+        ]
+        confidence = 0.88
+    else:
+        explain = (
+            f"Suspicious activity requires triage and containment validation. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = ["Collect host and network evidence for escalation."]
+        checklist = ["Verify impacted assets.", "Confirm containment status."]
+        confidence = 0.5
 
     return EPC(
-        explain=str(template["explain"]),
-        plan=list(template["plan"]),  # type: ignore[arg-type]
-        checklist=list(template["checklist"]),  # type: ignore[arg-type]
-        confidence=float(template["confidence"]),
+        explain=explain,
+        plan=plan,
+        checklist=checklist,
+        confidence=confidence,
         citations=primary_mapping.evidence_refs,
     )
 
@@ -508,7 +673,7 @@ def run(
         mapping_source = "none"
 
     if attack_mapping and mapping_source == "rule":
-        epc = _build_epc(attack_mapping[0])
+        epc = _build_epc(attack_mapping[0], event.normalized_event)
     elif attack_mapping and mapping_source == "ml_fallback":
         epc = _build_ml_fallback_epc(attack_mapping[0])
     else:

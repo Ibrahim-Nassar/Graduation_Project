@@ -103,6 +103,9 @@ class MainWindowTabSmokeTests(_BaseUiGlueTest):
         self.assertIsNotNone(self.window.soc_entities_table)
         self.assertIsNotNone(self.window.provider_checkboxes)
 
+    def test_soc_page_does_not_expose_model_path_input(self) -> None:
+        self.assertFalse(hasattr(self.window, "soc_model_path_input"))
+
 
 class IocRunHandlerTests(_BaseUiGlueTest):
     def test_empty_input_shows_warning_and_does_not_start_worker(self) -> None:
@@ -266,6 +269,7 @@ class SocRunHandlerTests(_BaseUiGlueTest):
             self.window._run_soc_analysis()
         loader.assert_called_once()
         self.assertEqual(_FakeWorker.instances[0].task_kwargs["selected_log"], "failed login failed login failed login")
+        self.assertNotIn("model_path", _FakeWorker.instances[0].task_kwargs)
         self.assertTrue(_FakeThread.instances[0].started_called)
 
     def test_file_path_starts_analysis(self) -> None:
@@ -344,8 +348,197 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
         self.assertEqual(self.window.soc_mitre_table.rowCount(), 1)
         self.assertIn("Explain:", self.window.soc_epc_text.toPlainText())
         self.assertEqual(self.window.soc_enrichment_table.rowCount(), 1)
-        self.assertIn("Source: rule", self.window.soc_summary_label.text())
+        self.assertIn("Mapped T1110 (Brute Force)", self.window.soc_summary_label.text())
         self.assertEqual(self.window.soc_top_source.text(), "Mapping Source: rule")
+        self.assertIn("Used (1 IOCs)", self.window.soc_top_enrichment.text())
+
+    def test_low_confidence_mapping_shows_cautionary_summary(self) -> None:
+        payload = {
+            "ok": True,
+            "summary": {
+                "technique_id": "T1110",
+                "technique_name": "Brute Force",
+                "confidence": 0.41,
+                "mapping_source": "rule",
+                "entity_count": 1,
+            },
+            "result": {
+                "entities": [{"type": "ipv4", "value": "8.8.8.8", "evidence_ref": "8.8.8.8"}],
+                "attack_mapping": [
+                    {
+                        "technique_id": "T1110",
+                        "technique_name": "Brute Force",
+                        "confidence": 0.41,
+                        "rationale": "Partial failed auth evidence",
+                        "evidence_refs": ["authentication failed"],
+                    }
+                ],
+                "epc": {
+                    "explain": "Low-confidence mapping text",
+                    "plan": ["Step one"],
+                    "checklist": ["Item one", "Item two"],
+                    "confidence": 0.41,
+                    "citations": ["authentication failed"],
+                },
+                "audit": {"mapping_source": "rule"},
+            },
+        }
+        self.window.soc_enrich_toggle.setChecked(False)
+        self.window._on_soc_analysis_finished(payload)
+        self.assertIn("low confidence", self.window.soc_summary_label.text().lower())
+        self.assertIn("(low)", self.window.soc_top_confidence.text())
+        self.assertIn("Not requested", self.window.soc_top_enrichment.text())
+
+    def test_no_mapping_with_partial_extraction_is_explained(self) -> None:
+        payload = {
+            "ok": False,
+            "error": "No ATT&CK mapping could be produced for this log.",
+            "reason": "no_mapping",
+            "partial_result": {
+                "entities": [
+                    {"type": "username", "value": "alice", "evidence_ref": "alice"},
+                    {"type": "ipv4", "value": "10.0.0.5", "evidence_ref": "10.0.0.5"},
+                ],
+                "attack_mapping": [],
+                "epc": {},
+                "audit": {"mapping_source": "none", "entity_count": 2, "mapping_count": 0},
+            },
+        }
+        self.window._on_soc_analysis_finished(payload)
+        self.assertIn("no att&ck mapping was produced", self.window.soc_summary_label.text().lower())
+        self.assertIn("extraction still succeeded", self.window.soc_summary_label.text().lower())
+        self.assertEqual(self.window.soc_entities_table.rowCount(), 2)
+        self.assertEqual(self.window.soc_mitre_table.rowCount(), 0)
+        self.assertIn("unavailable because no ATT&CK mapping was produced", self.window.soc_epc_text.toPlainText())
+        self.assertEqual(self.window.soc_top_source.text(), "Mapping Source: none")
+        self.assertEqual(self.window.home_soc_metric.text(), "Yes")
+        self.assertIn("Technique: N/A (Not mapped)", self.window.home_soc_summary.text())
+
+    def test_enrichment_enabled_without_rows_is_called_out(self) -> None:
+        payload = {
+            "ok": True,
+            "summary": {
+                "technique_id": "T1059",
+                "technique_name": "Command and Scripting Interpreter",
+                "confidence": 0.9,
+                "mapping_source": "rule",
+                "entity_count": 1,
+            },
+            "result": {
+                "entities": [{"type": "process", "value": "powershell.exe", "evidence_ref": "powershell"}],
+                "attack_mapping": [
+                    {
+                        "technique_id": "T1059",
+                        "technique_name": "Command and Scripting Interpreter",
+                        "confidence": 0.9,
+                        "rationale": "PowerShell encoded execution",
+                        "evidence_refs": ["powershell", "-enc"],
+                    }
+                ],
+                "epc": {
+                    "explain": "Explain text",
+                    "plan": ["Step one"],
+                    "checklist": ["Item one", "Item two"],
+                    "confidence": 0.9,
+                    "citations": ["powershell"],
+                },
+                "audit": {"mapping_source": "rule", "ioc_enrichment": []},
+            },
+        }
+        self.window.soc_enrich_toggle.setChecked(True)
+        self.window._on_soc_analysis_finished(payload)
+        self.assertIn("Enabled, but no IOC enrichment data was produced", self.window.soc_top_enrichment.text())
+
+
+class AnalystBriefUiTests(_BaseUiGlueTest):
+    def test_analyst_brief_widget_exists_on_soc_page(self) -> None:
+        self.assertIsNotNone(self.window.soc_analyst_brief_label)
+        self.assertTrue(self.window.soc_analyst_brief_label.wordWrap())
+
+    def test_mapped_result_populates_brief_with_technique(self) -> None:
+        payload = {
+            "ok": True,
+            "summary": {
+                "technique_id": "T1059",
+                "technique_name": "Command and Scripting Interpreter",
+                "confidence": 0.9,
+                "mapping_source": "rule",
+                "entity_count": 1,
+            },
+            "analyst_brief": (
+                "Log analysis identified activity involving process \u2018powershell.exe\u2019. "
+                "Mapped to T1059 (Command and Scripting Interpreter) at 90% confidence. "
+                "Primary evidence: PowerShell executed with encoded command switch. "
+                "Recommended first action: Isolate the host."
+            ),
+            "result": {
+                "entities": [{"type": "process", "value": "powershell.exe", "evidence_ref": "powershell"}],
+                "attack_mapping": [
+                    {
+                        "technique_id": "T1059",
+                        "technique_name": "Command and Scripting Interpreter",
+                        "confidence": 0.9,
+                        "rationale": "PowerShell executed with encoded command switch.",
+                        "evidence_refs": ["powershell", "-enc"],
+                    }
+                ],
+                "epc": {
+                    "explain": "Explain text",
+                    "plan": ["Isolate the host."],
+                    "checklist": ["Item one", "Item two"],
+                    "confidence": 0.9,
+                    "citations": ["powershell"],
+                },
+                "audit": {"mapping_source": "rule"},
+            },
+        }
+        self.window._on_soc_analysis_finished(payload)
+        brief_text = self.window.soc_analyst_brief_label.text()
+        self.assertIn("T1059", brief_text)
+        self.assertIn("powershell", brief_text.lower())
+
+    def test_no_mapping_result_populates_brief_without_technique(self) -> None:
+        payload = {
+            "ok": False,
+            "error": "No ATT&CK mapping could be produced for this log.",
+            "reason": "no_mapping",
+            "analyst_brief": (
+                "Analysis completed but no MITRE ATT&CK mapping was produced for this log. "
+                "Extracted entities: username \u2018alice\u2019, ipv4 \u201810.0.0.5\u2019. "
+                "Recommended action: review extracted fields for missing context,"
+                " add correlated log lines, and re-analyze."
+            ),
+            "partial_result": {
+                "entities": [
+                    {"type": "username", "value": "alice", "evidence_ref": "alice"},
+                    {"type": "ipv4", "value": "10.0.0.5", "evidence_ref": "10.0.0.5"},
+                ],
+                "attack_mapping": [],
+                "epc": {},
+                "audit": {"mapping_source": "none", "entity_count": 2, "mapping_count": 0},
+            },
+        }
+        self.window._on_soc_analysis_finished(payload)
+        brief_text = self.window.soc_analyst_brief_label.text()
+        self.assertIn("no mitre att&ck mapping", brief_text.lower())
+        self.assertIn("alice", brief_text)
+
+    def test_brief_regenerated_when_not_in_payload(self) -> None:
+        payload = {
+            "ok": False,
+            "error": "No ATT&CK mapping could be produced for this log.",
+            "reason": "no_mapping",
+            "partial_result": {
+                "entities": [],
+                "attack_mapping": [],
+                "epc": {},
+                "audit": {"mapping_source": "none", "entity_count": 0, "mapping_count": 0},
+            },
+        }
+        self.window._on_soc_analysis_finished(payload)
+        brief_text = self.window.soc_analyst_brief_label.text()
+        self.assertIn("no mitre att&ck mapping", brief_text.lower())
+        self.assertIn("Recommended action:", brief_text)
 
 
 class SettingsApplyFlowTests(_BaseUiGlueTest):

@@ -327,6 +327,31 @@ class SocExportTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
         self.assertTrue(all(set(row.keys()) == {"section", "item", "value"} for row in rows))
 
+    def test_export_soc_csv_uses_partial_result_when_result_missing(self) -> None:
+        payload = {
+            "ok": False,
+            "summary": {
+                "technique_id": "N/A",
+                "technique_name": "Not mapped",
+                "confidence": 0.0,
+                "mapping_source": "none",
+                "entity_count": 1,
+            },
+            "partial_result": {
+                "entities": [{"type": "username", "value": "alice"}],
+                "attack_mapping": [],
+                "epc": {},
+                "audit": {"mapping_source": "none", "entity_count": 1, "mapping_count": 0},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "soc_partial.csv"
+            export_soc_csv(str(csv_path), payload)
+            with csv_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertTrue(any(row["section"] == "summary" and row["item"] == "technique_id" and row["value"] == "N/A" for row in rows))
+        self.assertTrue(any(row["section"] == "entity" and row["item"] == "1:username" and row["value"] == "alice" for row in rows))
+
 
 class PackagingSensitivePathTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -363,8 +388,8 @@ class PackagingSensitivePathTests(unittest.TestCase):
     def test_load_ioc_enrichment_module_missing_is_safe(self) -> None:
         pipeline_module._IOC_MODULE_CACHE = None
         with (
-            patch("src.pipeline.importlib.import_module", side_effect=ModuleNotFoundError("missing")),
             patch("src.pipeline._ioc_enrichment_search_paths", return_value=[]),
+            patch("src.pipeline.importlib.import_module", side_effect=ModuleNotFoundError("missing")),
         ):
             loaded = pipeline_module._load_ioc_enrichment_module()
         self.assertIsNone(loaded)

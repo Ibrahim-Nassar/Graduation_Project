@@ -40,6 +40,7 @@ from src.desktop_services import (
     export_ioc_csv,
     export_json,
     export_soc_csv,
+    generate_analyst_brief,
     load_soc_log_inputs,
     load_persisted_settings,
     sanitize_api_keys,
@@ -142,6 +143,50 @@ def _format_ioc_detail_text(row: dict[str, Any]) -> str:
         f"{chr(10).join(f'- {err}' for err in errors) if errors else '- None'}\n\n"
         f"Raw Details:\n{raw_text}"
     )
+
+
+def _soc_enrichment_label(enrich_used: bool, enrichment_count: int) -> str:
+    if not enrich_used:
+        return "IOC Enrichment: Not requested"
+    if enrichment_count > 0:
+        return f"IOC Enrichment: Used ({enrichment_count} IOCs)"
+    return "IOC Enrichment: Enabled, but no IOC enrichment data was produced"
+
+
+def _soc_summary_and_banner(payload: dict[str, Any], enrich_used: bool) -> tuple[str, str, str]:
+    summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+    technique_id = str(summary.get("technique_id", "N/A"))
+    technique_name = str(summary.get("technique_name", "N/A"))
+    mapping_source = str(summary.get("mapping_source", "unknown"))
+    entity_count = int(summary.get("entity_count", 0) or 0)
+    confidence_value = float(summary.get("confidence", 0.0) or 0.0)
+    enrichment = payload.get("result", {}).get("audit", {}).get("ioc_enrichment", [])
+    enrichment_count = len(enrichment) if isinstance(enrichment, list) else 0
+    enrichment_label = _soc_enrichment_label(enrich_used, enrichment_count)
+
+    if technique_id == "N/A":
+        summary_text = (
+            f"No ATT&CK mapping was produced. {enrichment_label}. "
+            f"Mapping source: {mapping_source}. Extracted entities: {entity_count}."
+        )
+        banner_text = "SOC analysis completed without an ATT&CK mapping."
+        return summary_text, banner_text, "info"
+
+    if confidence_value < 0.6:
+        summary_text = (
+            f"Mapped {technique_id} ({technique_name}) with low confidence ({confidence_value:.3f}). "
+            f"Review rationale and evidence before response actions. Source: {mapping_source}. "
+            f"Extracted entities: {entity_count}. {enrichment_label}."
+        )
+        banner_text = f"SOC analysis complete: {technique_id} mapped with low confidence."
+        return summary_text, banner_text, "info"
+
+    summary_text = (
+        f"Mapped {technique_id} ({technique_name}) at confidence {confidence_value:.3f}. "
+        f"Source: {mapping_source}. Extracted entities: {entity_count}. {enrichment_label}."
+    )
+    banner_text = f"SOC analysis complete: {technique_id} mapped."
+    return summary_text, banner_text, "success"
 
 
 def _card(title: str = "") -> tuple[QFrame, QVBoxLayout]:
@@ -250,7 +295,6 @@ def _scan_iocs_background(
 def _analyze_soc_background(
     *,
     selected_log: str,
-    model_path: str,
     enrich_iocs: bool,
     ioc_providers: dict[str, bool],
     ioc_api_keys: dict[str, str],
@@ -259,7 +303,6 @@ def _analyze_soc_background(
     progress("Analyzing log with enrichment..." if enrich_iocs else "Analyzing log...")
     return analyze_soc_log(
         selected_log,
-        model_path=model_path,
         enrich_iocs=enrich_iocs,
         ioc_providers=ioc_providers,
         ioc_api_keys=ioc_api_keys,
@@ -728,6 +771,13 @@ QTextEdit[class="detailBox"] {{
     font-size: 11.5px;
     line-height: 1.3;
 }}
+QLabel[class="analystBrief"] {{
+    font-size: 12.5px;
+    font-weight: 500;
+    color: {_TEXT};
+    line-height: 1.5;
+    padding: 4px 2px;
+}}
 QProgressBar {{
     border: 1px solid {_BORDER};
     border-radius: 5px;
@@ -912,7 +962,6 @@ class DesktopSecurityApp(QMainWindow):
             self.soc_export_json_btn,
             self.soc_export_csv_btn,
             self.soc_raw_log_input,
-            self.soc_model_path_input,
             self.soc_enrich_toggle,
             self.soc_browse_btn,
             self.soc_clear_file_btn,
@@ -1256,13 +1305,6 @@ class DesktopSecurityApp(QMainWindow):
         opt_form = QFormLayout()
         opt_form.setSpacing(10)
 
-        self.soc_model_path_input = QLineEdit()
-        self.soc_model_path_input.setPlaceholderText(
-            "Optional .pkl model for ML fallback",
-        )
-        self.soc_model_path_input.setMaximumWidth(480)
-        opt_form.addRow("Model path:", self.soc_model_path_input)
-
         self.soc_enrich_toggle = QCheckBox("Enable IOC enrichment in SOC analysis")
         self.soc_enrich_toggle.setChecked(False)
         opt_form.addRow("", self.soc_enrich_toggle)
@@ -1301,6 +1343,16 @@ class DesktopSecurityApp(QMainWindow):
         self.soc_summary_label.setProperty("class", "summary")
         self.soc_summary_label.setWordWrap(True)
         lay.addWidget(self.soc_summary_label)
+
+        # -- analyst brief card --
+        brief_card, brief_lay = _card("What Happened \u2014 Analyst Brief")
+        self.soc_analyst_brief_label = QLabel(
+            "Run an analysis to generate the analyst brief."
+        )
+        self.soc_analyst_brief_label.setProperty("class", "analystBrief")
+        self.soc_analyst_brief_label.setWordWrap(True)
+        brief_lay.addWidget(self.soc_analyst_brief_label)
+        lay.addWidget(brief_card)
 
         soc_top_card, soc_top_lay = _card("Analysis Summary")
         self.soc_top_technique = QLabel("Technique: N/A")
@@ -1672,7 +1724,6 @@ class DesktopSecurityApp(QMainWindow):
             _analyze_soc_background,
             task_kwargs={
                 "selected_log": selected_log,
-                "model_path": self.soc_model_path_input.text().strip(),
                 "enrich_iocs": enrich_iocs,
                 "ioc_providers": dict(self.settings_state.providers),
                 "ioc_api_keys": dict(self.settings_state.api_keys),
@@ -1693,45 +1744,80 @@ class DesktopSecurityApp(QMainWindow):
     def _on_soc_analysis_finished(self, payload: dict[str, Any]) -> None:
         if not payload.get("ok"):
             message = str(payload.get("error", "SOC analysis failed"))
-            QMessageBox.warning(self, "Analysis Failed", message)
-            self.soc_summary_label.setText(message)
-            self._set_banner(self.soc_run_status, f"SOC analysis failed: {message}", "danger")
+            reason = str(payload.get("reason", "")).strip().lower()
+            partial_result = payload.get("partial_result", {})
+            if reason == "no_mapping" and isinstance(partial_result, dict):
+                self.last_soc_payload = payload
+                entity_count = int(partial_result.get("audit", {}).get("entity_count", 0) or 0)
+                self._populate_soc_sections(payload)
+                brief = str(payload.get("analyst_brief", ""))
+                if not brief:
+                    brief = generate_analyst_brief(payload)
+                self.soc_analyst_brief_label.setText(brief)
+                self.soc_top_technique.setText("Technique: Not mapped")
+                self.soc_top_confidence.setText("Confidence: N/A (no mapping)")
+                self.soc_top_source.setText("Mapping Source: none")
+                self.soc_top_enrichment.setText(_soc_enrichment_label(self.soc_enrich_toggle.isChecked(), 0))
+                if entity_count > 0:
+                    self.soc_summary_label.setText(
+                        "No ATT&CK mapping was produced for this log. "
+                        f"Extraction still succeeded ({entity_count} entities found), but no deterministic ATT&CK mapping rule matched. "
+                        "Review the extracted entities and normalized fields, then add more correlated context and retry.",
+                    )
+                else:
+                    self.soc_summary_label.setText(
+                        "No ATT&CK mapping was produced and no extractable entities were found. "
+                        "Check log completeness/format and try again.",
+                    )
+                self.soc_section_entities.set_expanded(True)
+                self.soc_section_mitre.set_expanded(False)
+                self.soc_section_epc.set_expanded(False)
+                self.soc_section_enrichment.set_expanded(False)
+                self._set_banner(
+                    self.soc_run_status,
+                    "SOC analysis completed: no ATT&CK mapping was produced.",
+                    "info",
+                )
+                self._append_history(
+                    "SOC analysis",
+                    "Analyzed one log event (no ATT&CK mapping).",
+                    payload,
+                )
+                self._update_home_metrics()
+            else:
+                QMessageBox.warning(self, "Analysis Failed", message)
+                self.soc_summary_label.setText(message)
+                self._set_banner(self.soc_run_status, f"SOC analysis failed: {message}", "danger")
             self._set_soc_loading(False)
             return
 
         self.last_soc_payload = payload
         self._populate_soc_sections(payload)
+        brief = str(payload.get("analyst_brief", ""))
+        if not brief:
+            brief = generate_analyst_brief(payload)
+        self.soc_analyst_brief_label.setText(brief)
         summary = payload.get("summary", {})
         enrich_used = bool(self.soc_enrich_toggle.isChecked())
         confidence_value = float(summary.get("confidence", 0.0) or 0.0)
-        self.soc_summary_label.setText(
-            "Technique: {technique_id} ({technique_name})  |  "
-            "Confidence: {confidence:.3f}  |  "
-            "Source: {mapping_source}  |  Entities: {entity_count}".format(
-                technique_id=summary.get("technique_id", "N/A"),
-                technique_name=summary.get("technique_name", "N/A"),
-                confidence=confidence_value,
-                mapping_source=summary.get("mapping_source", "unknown"),
-                entity_count=int(summary.get("entity_count", 0) or 0),
-            ),
-        )
+        enrichment = payload.get("result", {}).get("audit", {}).get("ioc_enrichment", [])
+        enrichment_count = len(enrichment) if isinstance(enrichment, list) else 0
+        summary_text, banner_text, banner_tone = _soc_summary_and_banner(payload, enrich_used)
+        self.soc_summary_label.setText(summary_text)
         self.soc_top_technique.setText(
             f"Technique: {summary.get('technique_id', 'N/A')} ({summary.get('technique_name', 'N/A')})",
         )
-        self.soc_top_confidence.setText(f"Confidence: {confidence_value:.3f}")
+        if confidence_value < 0.6:
+            self.soc_top_confidence.setText(f"Confidence: {confidence_value:.3f} (low)")
+        else:
+            self.soc_top_confidence.setText(f"Confidence: {confidence_value:.3f}")
         self.soc_top_source.setText(f"Mapping Source: {summary.get('mapping_source', 'unknown')}")
-        self.soc_top_enrichment.setText(
-            f"IOC Enrichment: {'Used' if enrich_used else 'Not used'}",
-        )
+        self.soc_top_enrichment.setText(_soc_enrichment_label(enrich_used, enrichment_count))
         self.soc_section_mitre.set_expanded(True)
         self.soc_section_entities.set_expanded(True)
         self.soc_section_epc.set_expanded(False)
-        self.soc_section_enrichment.set_expanded(enrich_used)
-        self._set_banner(
-            self.soc_run_status,
-            f"SOC analysis complete: {summary.get('technique_id', 'N/A')} mapped.",
-            "success",
-        )
+        self.soc_section_enrichment.set_expanded(enrich_used and enrichment_count > 0)
+        self._set_banner(self.soc_run_status, banner_text, banner_tone)
         self._append_history("SOC analysis", "Analyzed one log event.", payload)
         self._update_home_metrics()
         self._set_soc_loading(False)
@@ -1749,6 +1835,10 @@ class DesktopSecurityApp(QMainWindow):
 
     def _populate_soc_sections(self, payload: dict[str, Any]) -> None:
         result = payload.get("result", {})
+        if not isinstance(result, dict):
+            result = {}
+        if not result and isinstance(payload.get("partial_result"), dict):
+            result = payload.get("partial_result", {})
         entities = result.get("entities", [])
         mappings = result.get("attack_mapping", [])
         epc = result.get("epc", {})
@@ -1775,16 +1865,24 @@ class DesktopSecurityApp(QMainWindow):
             evidence = ", ".join(str(item) for item in mapping.get("evidence_refs", []))
             self.soc_mitre_table.setItem(r, 4, QTableWidgetItem(evidence))
 
-        epc_text = (
-            f"Explain:\n{epc.get('explain', '')}\n\n"
-            f"Plan:\n- "
-            + "\n- ".join(str(item) for item in epc.get("plan", []))
-            + "\n\n"
-            f"Checklist:\n- "
-            + "\n- ".join(str(item) for item in epc.get("checklist", []))
-            + "\n\n"
-            f"Confidence: {epc.get('confidence', '')}"
-        )
+        if isinstance(epc, dict) and epc.get("explain"):
+            epc_text = (
+                f"Explain:\n{epc.get('explain', '')}\n\n"
+                f"Plan:\n- "
+                + "\n- ".join(str(item) for item in epc.get("plan", []))
+                + "\n\n"
+                f"Checklist:\n- "
+                + "\n- ".join(str(item) for item in epc.get("checklist", []))
+                + "\n\n"
+                f"Confidence: {epc.get('confidence', '')}"
+            )
+        else:
+            epc_text = (
+                "EPC guidance is unavailable because no ATT&CK mapping was produced.\n\n"
+                "Suggested next steps:\n"
+                "- Review extracted entities and normalized fields for missing context.\n"
+                "- Provide additional correlated log lines."
+            )
         self.soc_epc_text.setText(epc_text)
 
         self.soc_enrichment_table.setRowCount(0)
@@ -1982,17 +2080,33 @@ class DesktopSecurityApp(QMainWindow):
         else:
             self.home_ioc_summary.setText("No IOC scan yet.")
 
-        if self.last_soc_payload and self.last_soc_payload.get("summary"):
+        if self.last_soc_payload:
             summary = self.last_soc_payload.get("summary", {})
-            self.home_soc_summary.setText(
-                "Technique: {technique_id} ({technique_name}) | Confidence: {confidence:.3f} | "
-                "Source: {mapping_source}".format(
-                    technique_id=summary.get("technique_id", "N/A"),
-                    technique_name=summary.get("technique_name", "N/A"),
-                    confidence=float(summary.get("confidence", 0.0) or 0.0),
-                    mapping_source=summary.get("mapping_source", "unknown"),
-                ),
-            )
+            if not isinstance(summary, dict) or not summary:
+                partial_result = self.last_soc_payload.get("partial_result", {})
+                if isinstance(partial_result, dict):
+                    audit = partial_result.get("audit", {})
+                    if not isinstance(audit, dict):
+                        audit = {}
+                    summary = {
+                        "technique_id": "N/A",
+                        "technique_name": "Not mapped",
+                        "confidence": 0.0,
+                        "mapping_source": str(audit.get("mapping_source", "none")),
+                        "entity_count": int(audit.get("entity_count", len(partial_result.get("entities", []) or [])) or 0),
+                    }
+            if isinstance(summary, dict) and summary:
+                self.home_soc_summary.setText(
+                    "Technique: {technique_id} ({technique_name}) | Confidence: {confidence:.3f} | "
+                    "Source: {mapping_source}".format(
+                        technique_id=summary.get("technique_id", "N/A"),
+                        technique_name=summary.get("technique_name", "N/A"),
+                        confidence=float(summary.get("confidence", 0.0) or 0.0),
+                        mapping_source=summary.get("mapping_source", "unknown"),
+                    ),
+                )
+            else:
+                self.home_soc_summary.setText("SOC analysis was run, but no summary is available.")
         else:
             self.home_soc_summary.setText("No SOC analysis yet.")
 

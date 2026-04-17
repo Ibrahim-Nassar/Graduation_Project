@@ -324,6 +324,9 @@ class IocExportTests(unittest.TestCase):
         ]
         expected_columns = [
             "ioc",
+            "verdict",
+            "verdict_confidence",
+            "verdict_reasoning",
             "detected_type",
             "effective_type",
             "status",

@@ -224,11 +224,16 @@ def _scan_with_forced_type(
         if payload is not None:
             provider_results[provider_name] = payload
 
+    verdict: dict[str, Any] = {}
+    if hasattr(ioc_module, "compute_verdict"):
+        verdict = ioc_module.compute_verdict(provider_results)
+
     return {
         "ioc": ioc,
         "type": forced_type,
         "status": ioc_module._aggregate_status(provider_results),  # type: ignore[attr-defined]
         "score": ioc_module._aggregate_score(provider_results),  # type: ignore[attr-defined]
+        "verdict": verdict,
         "providers": provider_results,
     }
 
@@ -297,6 +302,10 @@ def scan_iocs(
                 if isinstance(payload, dict) and payload.get("error"):
                     errors.append(f"{provider_name}: {payload.get('error')}")
 
+        verdict_data = scan_result.get("verdict", {})
+        if not isinstance(verdict_data, dict):
+            verdict_data = {}
+
         rows.append(
             {
                 "ioc": ioc,
@@ -304,6 +313,9 @@ def scan_iocs(
                 "effective_type": effective_type,
                 "status": str(scan_result.get("status", "unknown")),
                 "score": int(scan_result.get("score", 0) or 0),
+                "verdict": str(verdict_data.get("verdict", "Unknown")),
+                "verdict_confidence": int(verdict_data.get("confidence", 0) or 0),
+                "verdict_reasoning": str(verdict_data.get("reasoning", "")),
                 "virustotal": provider_statuses["virustotal"],
                 "abuseipdb": provider_statuses["abuseipdb"],
                 "otx": provider_statuses["otx"],
@@ -375,24 +387,41 @@ def analyze_soc_log(
             "mapping_source": dump["audit"].get("mapping_source"),
             "entity_count": len(dump["entities"]),
         }
-        out = {"ok": True, "summary": summary, "result": dump}
+        out: dict[str, Any] = {"ok": True, "summary": summary, "result": dump}
         out["analyst_brief"] = generate_analyst_brief(out)
+        out["investigation_summary"] = generate_investigation_summary(out)
+
+        entity_values = [str(e.get("value", "")) for e in dump.get("entities", []) if e.get("type") in {"ipv4", "domain"}]
+        for ev in entity_values:
+            correlation_store.record_ioc(ev, "seen", "soc_analysis")
+        correlation_store.record_technique(
+            top_mapping["technique_id"], top_mapping["technique_name"],
+            entity_values, top_mapping["confidence"],
+        )
+        out["correlation_insights"] = correlation_store.get_all_insights(entity_values, top_mapping["technique_id"])
         return out
     except ValidationError as exc:
         partial_result: dict[str, Any] = {}
         try:
             event = pipeline_module._normalize_event(value)
             entities = pipeline_module._extract_entities(event.raw_event, event.normalized_event)
+            audit: dict[str, Any] = {
+                "mapping_source": "none",
+                "normalized_event": event.normalized_event,
+                "entity_count": len(entities),
+                "mapping_count": 0,
+            }
+            if enrich_iocs:
+                audit["ioc_enrichment"] = pipeline_module._enrich_iocs(
+                    entities,
+                    providers=ioc_providers,
+                    api_keys=ioc_api_keys,
+                )
             partial_result = {
                 "entities": [entity.model_dump(mode="json") for entity in entities],
                 "attack_mapping": [],
                 "epc": {},
-                "audit": {
-                    "mapping_source": "none",
-                    "normalized_event": event.normalized_event,
-                    "entity_count": len(entities),
-                    "mapping_count": 0,
-                },
+                "audit": audit,
             }
         except Exception:
             partial_result = {}
@@ -405,7 +434,7 @@ def analyze_soc_log(
             if isinstance(partial_result, dict)
             else 0,
         }
-        out = {
+        out: dict[str, Any] = {
             "ok": False,
             "summary": summary,
             "result": partial_result,
@@ -415,6 +444,16 @@ def analyze_soc_log(
             "details": exc.errors(),
         }
         out["analyst_brief"] = generate_analyst_brief(out)
+        out["investigation_summary"] = generate_investigation_summary(out)
+
+        entity_values = [
+            str(e.get("value", ""))
+            for e in (partial_result.get("entities", []) if isinstance(partial_result, dict) else [])
+            if e.get("type") in {"ipv4", "domain"}
+        ]
+        for ev in entity_values:
+            correlation_store.record_ioc(ev, "seen", "soc_analysis")
+        out["correlation_insights"] = correlation_store.get_ioc_insights(entity_values)
         return out
     except Exception as exc:  # pragma: no cover - UI safety net
         return {"ok": False, "error": str(exc)}
@@ -433,6 +472,9 @@ def export_json(path: str, payload: Any) -> None:
 def export_ioc_csv(path: str, rows: list[dict[str, Any]]) -> None:
     columns = [
         "ioc",
+        "verdict",
+        "verdict_confidence",
+        "verdict_reasoning",
         "detected_type",
         "effective_type",
         "status",
@@ -607,3 +649,200 @@ def sanitize_api_keys(api_keys: dict[str, str]) -> dict[str, str]:
 
 def split_bulk_ioc_text(text: str) -> list[str]:
     return _unique_values([item for item in re.split(r"[\n\r]+", text) if item.strip()])
+
+
+# ── Correlation Engine ────────────────────────────────────────────────────────
+
+_MULTI_STAGE_PATTERNS: list[tuple[frozenset[str], str]] = [
+    (frozenset({"T1003", "T1021"}), "Credential theft followed by lateral movement — possible compromised-account pivot"),
+    (frozenset({"T1059", "T1003"}), "Script execution with credential dumping — possible post-exploitation"),
+    (frozenset({"T1110", "T1021"}), "Brute-force attempt followed by remote service access — may indicate successful breach"),
+    (frozenset({"T1059", "T1071"}), "Script execution with C2-style DNS activity — possible malware beaconing"),
+    (frozenset({"T1053", "T1059"}), "Scheduled task with scripting — possible persistence mechanism"),
+    (frozenset({"T1070", "T1003"}), "Log clearing after credential access — likely evidence destruction"),
+]
+
+
+class CorrelationStore:
+    """In-memory store that tracks IOCs and techniques across analyses."""
+
+    def __init__(self) -> None:
+        self._ioc_sightings: dict[str, list[dict[str, Any]]] = {}
+        self._technique_history: list[dict[str, Any]] = []
+
+    def record_ioc(self, ioc: str, status: str, context: str = "") -> None:
+        key = ioc.strip().lower()
+        if key not in self._ioc_sightings:
+            self._ioc_sightings[key] = []
+        self._ioc_sightings[key].append({
+            "status": status,
+            "context": context,
+            "timestamp": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    def record_technique(self, technique_id: str, technique_name: str, entities: list[str], confidence: float) -> None:
+        self._technique_history.append({
+            "technique_id": technique_id,
+            "technique_name": technique_name,
+            "entities": entities,
+            "confidence": confidence,
+            "timestamp": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    def get_ioc_insights(self, iocs: list[str]) -> list[dict[str, str]]:
+        insights: list[dict[str, str]] = []
+        for ioc in iocs:
+            key = ioc.strip().lower()
+            sightings = self._ioc_sightings.get(key, [])
+            if len(sightings) > 1:
+                mal_count = sum(1 for s in sightings if s["status"] == "malicious")
+                insights.append({
+                    "type": "repeated_ioc",
+                    "indicator": ioc,
+                    "summary": f"IOC '{ioc}' seen {len(sightings)} times across analyses"
+                               + (f" ({mal_count} malicious)" if mal_count else ""),
+                })
+        return insights
+
+    def get_technique_insights(self, current_technique: str) -> list[dict[str, str]]:
+        insights: list[dict[str, str]] = []
+        past_techniques = {entry["technique_id"] for entry in self._technique_history}
+        if current_technique in past_techniques:
+            count = sum(1 for e in self._technique_history if e["technique_id"] == current_technique)
+            insights.append({
+                "type": "repeated_technique",
+                "indicator": current_technique,
+                "summary": f"Technique {current_technique} observed {count + 1} times across analyses",
+            })
+
+        all_techniques = past_techniques | {current_technique}
+        for pattern_set, description in _MULTI_STAGE_PATTERNS:
+            if pattern_set.issubset(all_techniques):
+                techniques_str = " + ".join(sorted(pattern_set))
+                insights.append({
+                    "type": "multi_stage",
+                    "indicator": techniques_str,
+                    "summary": description,
+                })
+        return insights
+
+    def get_all_insights(self, iocs: list[str], current_technique: str) -> list[dict[str, str]]:
+        return self.get_ioc_insights(iocs) + self.get_technique_insights(current_technique)
+
+    def clear(self) -> None:
+        self._ioc_sightings.clear()
+        self._technique_history.clear()
+
+
+correlation_store = CorrelationStore()
+
+
+# ── Smart Summary Generator ──────────────────────────────────────────────────
+
+_TECHNIQUE_DESCRIPTIONS: dict[str, str] = {
+    "T1003": "credential harvesting from memory or disk",
+    "T1021": "lateral movement using remote services",
+    "T1053": "persistence via scheduled task or job",
+    "T1055": "code injection into a running process",
+    "T1059": "execution through a command-line interpreter or scripting engine",
+    "T1070": "tampering with logs or forensic artifacts",
+    "T1071": "command-and-control communication over application-layer protocols",
+    "T1110": "brute-force password guessing against authentication services",
+}
+
+_SEVERITY_ACTIONS: dict[str, str] = {
+    "critical": "Immediately isolate affected hosts and escalate to incident response.",
+    "high": "Prioritize investigation and contain affected systems within the hour.",
+    "medium": "Investigate within the shift and apply targeted mitigations.",
+    "low": "Schedule review and monitor for recurrence.",
+    "info": "No immediate action required — archive for awareness.",
+}
+
+
+def generate_investigation_summary(payload: dict[str, Any]) -> dict[str, str]:
+    """Generate a structured investigation summary from SOC analysis results.
+
+    Returns a dict with ``what_happened``, ``severity_assessment``, and ``next_steps``.
+    """
+    summary = payload.get("summary", {})
+    if not isinstance(summary, dict):
+        summary = {}
+    result = payload.get("result", {})
+    if not isinstance(result, dict):
+        result = {}
+    if not result and isinstance(payload.get("partial_result"), dict):
+        result = payload.get("partial_result", {})
+
+    technique_id = str(summary.get("technique_id", "N/A"))
+    technique_name = str(summary.get("technique_name", "N/A"))
+    confidence = float(summary.get("confidence", 0.0) or 0.0)
+    entity_count = int(summary.get("entity_count", 0) or 0)
+    mapping_source = str(summary.get("mapping_source", "none"))
+
+    entities = result.get("entities", []) if isinstance(result.get("entities"), list) else []
+    epc = result.get("epc", {}) if isinstance(result.get("epc"), dict) else {}
+
+    severity = assess_severity(payload)
+
+    entity_subjects = []
+    for e in entities[:4]:
+        etype = str(e.get("type", "")).strip()
+        evalue = str(e.get("value", "")).strip()
+        if etype and evalue:
+            entity_subjects.append(f"{etype} '{evalue}'")
+
+    if technique_id == "N/A":
+        what = "Analysis did not identify a known attack pattern."
+        if entity_subjects:
+            what += f" Entities observed: {', '.join(entity_subjects)}."
+        elif entity_count > 0:
+            what += f" {entity_count} entities were extracted but matched no technique."
+        else:
+            what += " No extractable indicators were found in the log."
+    else:
+        description = _TECHNIQUE_DESCRIPTIONS.get(technique_id, technique_name.lower())
+        what = f"The log indicates {description}"
+        if mapping_source == "ml_fallback":
+            what += " (identified via ML model — manual verification recommended)"
+        what += f", mapped to {technique_id} ({technique_name}) at {confidence:.0%} confidence."
+        if entity_subjects:
+            what += f" Involved entities: {', '.join(entity_subjects)}."
+
+    sev_text = f"Severity: {severity.upper()}."
+    if confidence < 0.6 and technique_id != "N/A":
+        sev_text += " Note: confidence is below 60% — treat as preliminary."
+
+    action = _SEVERITY_ACTIONS.get(severity, "Monitor and document findings.")
+    plan_items = epc.get("plan", []) if isinstance(epc.get("plan"), list) else []
+    if plan_items:
+        action += " Specifically: " + plan_items[0]
+
+    return {
+        "what_happened": what,
+        "severity_assessment": sev_text,
+        "next_steps": action,
+    }
+
+
+_HIGH_SEVERITY_TECHNIQUES = frozenset({"T1003", "T1055"})
+_MEDIUM_SEVERITY_TECHNIQUES = frozenset({"T1059", "T1070", "T1110", "T1053", "T1071"})
+
+
+def assess_severity(payload: dict[str, Any]) -> str:
+    """Derive a severity level from SOC analysis results."""
+    summary = payload.get("summary", {})
+    if not isinstance(summary, dict):
+        return "info"
+    confidence = float(summary.get("confidence", 0) or 0)
+    technique_id = str(summary.get("technique_id", "N/A"))
+    if technique_id == "N/A":
+        return "info"
+    if technique_id in _HIGH_SEVERITY_TECHNIQUES and confidence >= 0.7:
+        return "critical"
+    if technique_id in _HIGH_SEVERITY_TECHNIQUES:
+        return "high"
+    if technique_id in _MEDIUM_SEVERITY_TECHNIQUES and confidence >= 0.8:
+        return "high"
+    if confidence >= 0.6:
+        return "medium"
+    return "low"

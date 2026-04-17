@@ -103,6 +103,9 @@ class MainWindowTabSmokeTests(_BaseUiGlueTest):
         self.assertIsNotNone(self.window.soc_entities_table)
         self.assertIsNotNone(self.window.provider_checkboxes)
 
+    def test_no_cases_page_exists(self) -> None:
+        self.assertFalse(hasattr(self.window, "tab_index_cases"))
+
     def test_soc_page_does_not_expose_model_path_input(self) -> None:
         self.assertFalse(hasattr(self.window, "soc_model_path_input"))
 
@@ -194,10 +197,10 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
         self.assertEqual(self.window.ioc_table.rowCount(), 2)
         self.assertIn("Total: 2", self.window.ioc_summary_label.text())
         self.assertIn("Malicious: 0", self.window.ioc_summary_label.text())
-        summary_text = self.window.ioc_table.item(1, 9).text()
+        summary_text = self.window.ioc_table.item(1, 11).text()
         self.assertIn("virustotal:suspicious", summary_text)
         self.assertIn("abuseipdb:not_supported", summary_text)
-        self.assertEqual(self.window.ioc_table.item(1, 10).text(), "1")
+        self.assertEqual(self.window.ioc_table.item(1, 12).text(), "1")
         self.window.ioc_table.selectRow(1)
         self.window._update_ioc_detail_panel()
         self.assertIn("IOC: evil.example.com", self.window.ioc_detail_text.toPlainText())
@@ -411,7 +414,7 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
         self.assertEqual(self.window.soc_mitre_table.rowCount(), 0)
         self.assertIn("unavailable because no ATT&CK mapping was produced", self.window.soc_epc_text.toPlainText())
         self.assertEqual(self.window.soc_top_source.text(), "Mapping Source: none")
-        self.assertEqual(self.window.home_soc_metric.text(), "Yes")
+        self.assertEqual(self.window.home_soc_metric.text(), "1")
         self.assertIn("Technique: N/A (Not mapped)", self.window.home_soc_summary.text())
 
     def test_enrichment_enabled_without_rows_is_called_out(self) -> None:

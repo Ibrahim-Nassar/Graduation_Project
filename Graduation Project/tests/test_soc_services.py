@@ -3,17 +3,36 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from pydantic import ValidationError
 
 from src.desktop_services import (
+    CorrelationStore,
     _read_log_file_content,
     analyze_soc_log,
+    correlation_store,
     generate_analyst_brief,
+    generate_investigation_summary,
     load_soc_log_inputs,
 )
 from src.pipeline import run
+
+
+class _FakeNoMappingIocModule:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, bool] | None, dict[str, str] | None]] = []
+
+    def scan_ioc(
+        self,
+        value: str,
+        *,
+        providers: dict[str, bool] | None = None,
+        api_keys: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append((value, providers, api_keys))
+        return {"ioc": value, "status": "clean", "score": 10, "providers": {}, "errors": []}
 
 
 class AnalyzeSocLogWrapperTests(unittest.TestCase):
@@ -60,6 +79,53 @@ class AnalyzeSocLogWrapperTests(unittest.TestCase):
         entities = partial.get("entities", [])
         self.assertTrue(any(item.get("type") == "username" and item.get("value") == "alice" for item in entities))
         self.assertEqual(payload.get("result"), partial)
+
+    def test_no_mapping_enrichment_enabled_adds_deduped_iocs(self) -> None:
+        fake = _FakeNoMappingIocModule()
+        log = (
+            "authentication failed user=alice src_ip=10.0.0.5 domain=evil.example.com "
+            "src_ip=10.0.0.5 domain=evil.example.com"
+        )
+        with patch("src.pipeline._load_ioc_enrichment_module", return_value=fake):
+            payload = analyze_soc_log(
+                log,
+                enrich_iocs=True,
+                ioc_providers={"virustotal": True},
+                ioc_api_keys={"virustotal": "vt-key"},
+            )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload.get("reason"), "no_mapping")
+        audit = payload.get("partial_result", {}).get("audit", {})
+        enrichment = audit.get("ioc_enrichment", [])
+        self.assertEqual([item.get("ioc") for item in enrichment], ["10.0.0.5", "evil.example.com"])
+        self.assertTrue(fake.calls)
+        self.assertTrue(any(call[0] == "10.0.0.5" for call in fake.calls))
+        self.assertTrue(any(call[0] == "evil.example.com" for call in fake.calls))
+        self.assertTrue(all(call[1] == {"virustotal": True} for call in fake.calls))
+        self.assertTrue(all(call[2] == {"virustotal": "vt-key"} for call in fake.calls))
+        self.assertEqual(len(fake.calls), 2)
+
+    def test_no_mapping_enrichment_disabled_omits_ioc_enrichment(self) -> None:
+        payload = analyze_soc_log(
+            "authentication failed user=alice src_ip=10.0.0.5 domain=evil.example.com",
+            enrich_iocs=False,
+        )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload.get("reason"), "no_mapping")
+        audit = payload.get("partial_result", {}).get("audit", {})
+        self.assertNotIn("ioc_enrichment", audit)
+
+    def test_no_mapping_enrichment_calls_pipeline_enrichment_once(self) -> None:
+        original_enrich = __import__("src.pipeline", fromlist=["_enrich_iocs"])._enrich_iocs
+        with patch("src.pipeline._enrich_iocs", wraps=original_enrich) as enrich_mock:
+            payload = analyze_soc_log(
+                "authentication failed user=alice src_ip=10.0.0.5 domain=evil.example.com",
+                enrich_iocs=True,
+            )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload.get("reason"), "no_mapping")
+        self.assertEqual(enrich_mock.call_count, 1)
 
 
 class AnalystBriefMappedTests(unittest.TestCase):
@@ -244,6 +310,103 @@ class AnalystBriefFunctionDirectTests(unittest.TestCase):
         }
         brief = generate_analyst_brief(payload)
         self.assertIn("low confidence", brief.lower())
+
+
+class InvestigationSummaryTests(unittest.TestCase):
+    def test_mapped_payload_produces_what_severity_next(self) -> None:
+        payload = analyze_soc_log("powershell -enc QUJDRA==")
+        self.assertTrue(payload["ok"])
+        inv = payload.get("investigation_summary", {})
+        self.assertIn("what_happened", inv)
+        self.assertIn("severity_assessment", inv)
+        self.assertIn("next_steps", inv)
+        self.assertIn("T1059", inv["what_happened"])
+
+    def test_no_mapping_payload_says_no_pattern(self) -> None:
+        payload = analyze_soc_log("benign activity with no indicators")
+        inv = payload.get("investigation_summary", {})
+        self.assertIn("did not identify", inv["what_happened"].lower())
+
+    def test_generate_investigation_summary_direct(self) -> None:
+        payload = {
+            "summary": {
+                "technique_id": "T1110",
+                "technique_name": "Brute Force",
+                "confidence": 0.88,
+                "mapping_source": "rule",
+                "entity_count": 2,
+            },
+            "result": {
+                "entities": [
+                    {"type": "username", "value": "alice"},
+                    {"type": "ipv4", "value": "10.0.0.5"},
+                ],
+                "attack_mapping": [{"technique_id": "T1110"}],
+                "epc": {"plan": ["Lock the account."]},
+                "audit": {},
+            },
+        }
+        inv = generate_investigation_summary(payload)
+        self.assertIn("brute-force", inv["what_happened"].lower())
+        self.assertIn("Lock the account", inv["next_steps"])
+        self.assertIn("Severity:", inv["severity_assessment"])
+
+
+class CorrelationStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = CorrelationStore()
+
+    def test_repeated_ioc_produces_insight(self) -> None:
+        self.store.record_ioc("8.8.8.8", "clean")
+        self.store.record_ioc("8.8.8.8", "malicious")
+        insights = self.store.get_ioc_insights(["8.8.8.8"])
+        self.assertEqual(len(insights), 1)
+        self.assertEqual(insights[0]["type"], "repeated_ioc")
+        self.assertIn("2 times", insights[0]["summary"])
+
+    def test_single_ioc_no_insight(self) -> None:
+        self.store.record_ioc("8.8.8.8", "clean")
+        insights = self.store.get_ioc_insights(["8.8.8.8"])
+        self.assertEqual(len(insights), 0)
+
+    def test_multi_stage_pattern_detected(self) -> None:
+        self.store.record_technique("T1003", "Credential Dumping", [], 0.9)
+        insights = self.store.get_technique_insights("T1021")
+        multi_stage = [i for i in insights if i["type"] == "multi_stage"]
+        self.assertTrue(len(multi_stage) > 0)
+        self.assertIn("credential", multi_stage[0]["summary"].lower())
+
+    def test_repeated_technique_produces_insight(self) -> None:
+        self.store.record_technique("T1059", "Command Interpreter", [], 0.8)
+        insights = self.store.get_technique_insights("T1059")
+        repeated = [i for i in insights if i["type"] == "repeated_technique"]
+        self.assertEqual(len(repeated), 1)
+
+    def test_clear_resets_store(self) -> None:
+        self.store.record_ioc("8.8.8.8", "clean")
+        self.store.record_technique("T1059", "test", [], 0.5)
+        self.store.clear()
+        self.assertEqual(self.store.get_ioc_insights(["8.8.8.8"]), [])
+        self.assertEqual(self.store.get_technique_insights("T1059"), [])
+
+
+class AnalyzeSocLogCorrelationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        correlation_store.clear()
+
+    def test_success_payload_contains_correlation_and_summary(self) -> None:
+        payload = analyze_soc_log("powershell -enc QUJDRA==")
+        self.assertTrue(payload["ok"])
+        self.assertIn("correlation_insights", payload)
+        self.assertIn("investigation_summary", payload)
+        self.assertIsInstance(payload["correlation_insights"], list)
+        self.assertIsInstance(payload["investigation_summary"], dict)
+
+    def test_no_mapping_payload_contains_correlation_and_summary(self) -> None:
+        payload = analyze_soc_log("benign activity with no indicators")
+        self.assertFalse(payload["ok"])
+        self.assertIn("correlation_insights", payload)
+        self.assertIn("investigation_summary", payload)
 
 
 class FileInputTests(unittest.TestCase):

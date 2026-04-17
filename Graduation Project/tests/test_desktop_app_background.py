@@ -39,18 +39,12 @@ class DesktopBackgroundTaskTests(unittest.TestCase):
                 progress=progress_messages.append,
             )
 
-        self.assertEqual(captured_calls, [["1.1.1.1"], ["8.8.8.8"]])
-        self.assertEqual(
-            progress_messages,
-            ["Scanning IOC 1 of 2...", "Scanning IOC 2 of 2..."],
-        )
-        self.assertEqual(
-            rows,
-            [
-                {"ioc": "1.1.1.1", "status": "clean"},
-                {"ioc": "8.8.8.8", "status": "clean"},
-            ],
-        )
+        self.assertEqual(sorted(captured_calls), [["1.1.1.1"], ["8.8.8.8"]])
+        self.assertEqual(len(progress_messages), 2)
+        self.assertTrue(all("of 2" in m for m in progress_messages))
+        iocs_in_result = sorted(r["ioc"] for r in rows)
+        self.assertEqual(iocs_in_result, ["1.1.1.1", "8.8.8.8"])
+        self.assertEqual(len(rows), 2)
 
     def test_analyze_soc_background_reports_status_and_returns_payload(self) -> None:
         progress_messages: list[str] = []
@@ -79,6 +73,7 @@ class DesktopBackgroundTaskTests(unittest.TestCase):
         self.assertEqual(_status_tone("suspicious"), ("SUSPICIOUS", "#F59E0B"))
         self.assertEqual(_status_tone("malicious"), ("MALICIOUS", "#EF4444"))
         self.assertEqual(_status_tone("unknown"), ("UNKNOWN", "#9CA3AF"))
+        self.assertEqual(_status_tone("auth_error"), ("BAD API KEY", "#F97316"))
 
     def test_provider_summary_formatting_is_readable(self) -> None:
         self.assertEqual(

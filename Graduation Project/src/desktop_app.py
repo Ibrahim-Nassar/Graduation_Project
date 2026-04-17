@@ -36,11 +36,14 @@ from PySide6.QtWidgets import (
 from src.desktop_services import (
     PROVIDER_ORDER,
     analyze_soc_log,
+    assess_severity,
     collect_iocs,
+    correlation_store,
     export_ioc_csv,
     export_json,
     export_soc_csv,
     generate_analyst_brief,
+    generate_investigation_summary,
     load_soc_log_inputs,
     load_persisted_settings,
     sanitize_api_keys,
@@ -63,6 +66,21 @@ _TEXT2 = "#9CA3AF"
 _SIDEBAR = "#0F1629"
 
 
+_SEVERITY_COLORS = {
+    "critical": _DANGER,
+    "high": _WARNING,
+    "medium": _PRIMARY,
+    "low": _ACCENT,
+    "info": _TEXT2,
+}
+
+
+def _severity_label(severity: str) -> tuple[str, str]:
+    s = severity.lower().strip()
+    color = _SEVERITY_COLORS.get(s, _TEXT2)
+    return s.upper(), color
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _status_tone(value: str) -> tuple[str, str]:
@@ -73,6 +91,8 @@ def _status_tone(value: str) -> tuple[str, str]:
         return "SUSPICIOUS", _WARNING
     if low in {"clean"}:
         return "CLEAN", _ACCENT
+    if low in {"auth_error"}:
+        return "BAD API KEY", "#F97316"
     if low in {"not_found", "not_supported", "unknown", "n/a"}:
         label = low.replace("_", " ").upper()
         return label, _TEXT2
@@ -121,8 +141,22 @@ def _format_provider_summary(value: str) -> str:
     return text.replace(",", " |")
 
 
+def _verdict_tone(verdict: str) -> tuple[str, str]:
+    low = verdict.lower().strip()
+    if low == "malicious":
+        return "MALICIOUS", _DANGER
+    if low == "suspicious":
+        return "SUSPICIOUS", _WARNING
+    if low == "clean":
+        return "CLEAN", _ACCENT
+    return "UNKNOWN", _TEXT2
+
+
 def _format_ioc_detail_text(row: dict[str, Any]) -> str:
     status = str(row.get("status", "unknown"))
+    verdict = str(row.get("verdict", "Unknown"))
+    verdict_confidence = int(row.get("verdict_confidence", 0) or 0)
+    verdict_reasoning = str(row.get("verdict_reasoning", ""))
     providers = []
     for provider in PROVIDER_ORDER:
         providers.append(f"- {provider}: {row.get(provider, 'n/a')}")
@@ -132,9 +166,14 @@ def _format_ioc_detail_text(row: dict[str, Any]) -> str:
     raw_text = json.dumps(raw_section, indent=2, sort_keys=True) if raw_section else "N/A"
     return (
         f"IOC: {row.get('ioc', '')}\n"
+        f"\n=== VERDICT ===\n"
+        f"Verdict: {verdict}\n"
+        f"Confidence: {verdict_confidence}%\n"
+        f"Reasoning: {verdict_reasoning}\n"
+        f"===============\n\n"
         f"Detected Type: {row.get('detected_type', 'unknown')}\n"
         f"Effective Type: {row.get('effective_type', 'unknown')}\n"
-        f"Final Status: {status}\n"
+        f"Aggregate Status: {status}\n"
         f"Score: {row.get('score', 0)}\n\n"
         "Provider Statuses:\n"
         f"{chr(10).join(providers)}\n\n"
@@ -174,7 +213,7 @@ def _soc_summary_and_banner(payload: dict[str, Any], enrich_used: bool) -> tuple
 
     if confidence_value < 0.6:
         summary_text = (
-            f"Mapped {technique_id} ({technique_name}) with low confidence ({confidence_value:.3f}). "
+            f"Mapped {technique_id} ({technique_name}) with low confidence ({confidence_value:.0%}). "
             f"Review rationale and evidence before response actions. Source: {mapping_source}. "
             f"Extracted entities: {entity_count}. {enrichment_label}."
         )
@@ -182,10 +221,10 @@ def _soc_summary_and_banner(payload: dict[str, Any], enrich_used: bool) -> tuple
         return summary_text, banner_text, "info"
 
     summary_text = (
-        f"Mapped {technique_id} ({technique_name}) at confidence {confidence_value:.3f}. "
+        f"Mapped {technique_id} ({technique_name}) at {confidence_value:.0%} confidence. "
         f"Source: {mapping_source}. Extracted entities: {entity_count}. {enrichment_label}."
     )
-    banner_text = f"SOC analysis complete: {technique_id} mapped."
+    banner_text = f"SOC analysis complete: {technique_id} mapped at {confidence_value:.0%} confidence."
     return summary_text, banner_text, "success"
 
 
@@ -193,7 +232,7 @@ def _card(title: str = "") -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setProperty("class", "card")
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(12, 10, 12, 10)
+    lay.setContentsMargins(14, 12, 14, 12)
     lay.setSpacing(6)
     if title:
         lbl = QLabel(title.upper())
@@ -206,8 +245,8 @@ def _table(headers: list[str]) -> QTableWidget:
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
     header = t.horizontalHeader()
-    header.setStretchLastSection(False)
-    header.setMinimumSectionSize(88)
+    header.setStretchLastSection(True)
+    header.setMinimumSectionSize(70)
     header.setDefaultSectionSize(106)
     t.setAlternatingRowColors(True)
     t.setShowGrid(False)
@@ -230,8 +269,8 @@ def _scrollpage() -> tuple[QScrollArea, QVBoxLayout]:
     sa.setFrameShape(QFrame.Shape.NoFrame)
     inner = QWidget()
     lay = QVBoxLayout(inner)
-    lay.setContentsMargins(24, 16, 24, 16)
-    lay.setSpacing(10)
+    lay.setContentsMargins(28, 20, 28, 20)
+    lay.setSpacing(12)
     sa.setWidget(inner)
     sa.viewport().setAutoFillBackground(False)
     return sa, lay
@@ -277,18 +316,45 @@ def _scan_iocs_background(
     api_keys: dict[str, str],
     progress: Callable[[str], None],
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     total = len(iocs)
-    for index, ioc in enumerate(iocs, start=1):
-        progress(f"Scanning IOC {index} of {total}...")
-        rows.extend(
-            scan_iocs(
-                [ioc],
-                manual_ioc_type=manual_ioc_type,
-                providers=providers,
-                api_keys=api_keys,
-            )
+
+    def _scan_one(ioc: str) -> list[dict[str, Any]]:
+        return scan_iocs(
+            [ioc], manual_ioc_type=manual_ioc_type,
+            providers=providers, api_keys=api_keys,
         )
+
+    if total <= 1:
+        progress(f"Scanning IOC 1 of {total}...")
+        return scan_iocs(iocs, manual_ioc_type=manual_ioc_type,
+                         providers=providers, api_keys=api_keys)
+
+    max_workers = min(4, total)
+    ordered: dict[int, list[dict[str, Any]]] = {}
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_scan_one, ioc): idx for idx, ioc in enumerate(iocs)}
+        for future in as_completed(futures):
+            idx = futures[future]
+            done += 1
+            progress(f"Scanned {done} of {total} IOCs...")
+            try:
+                ordered[idx] = future.result()
+            except Exception:
+                ordered[idx] = [{
+                    "ioc": iocs[idx], "detected_type": "unknown",
+                    "effective_type": "unknown", "status": "error", "score": 0,
+                    "verdict": "Unknown", "verdict_confidence": 0, "verdict_reasoning": "",
+                    "virustotal": "error", "abuseipdb": "error",
+                    "otx": "error", "threatfox": "error",
+                    "provider_summary": "scan failed", "error_count": 1,
+                    "errors": ["IOC scan failed"], "raw": {},
+                }]
+    rows: list[dict[str, Any]] = []
+    for idx in range(total):
+        rows.extend(ordered.get(idx, []))
     return rows
 
 
@@ -330,8 +396,8 @@ class _Collapsible(QFrame):
 
         self._body = QWidget()
         self._body_lay = QVBoxLayout(self._body)
-        self._body_lay.setContentsMargins(12, 2, 12, 10)
-        self._body_lay.setSpacing(4)
+        self._body_lay.setContentsMargins(14, 4, 14, 12)
+        self._body_lay.setSpacing(6)
         self._body.setVisible(expanded)
         outer.addWidget(self._body)
 
@@ -377,7 +443,7 @@ QWidget#sidebar {{
     border-right: 1px solid {_BORDER};
 }}
 QLabel#brand {{
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 700;
     color: {_TEXT};
     padding: 0 18px;
@@ -425,21 +491,22 @@ QPushButton[class="nav"]:checked {{
 QFrame[class="card"] {{
     background: {_CARD};
     border: 1px solid {_BORDER};
-    border-radius: 7px;
+    border-radius: 8px;
 }}
 QLabel[class="cardTitle"] {{
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     color: {_TEXT2};
+    letter-spacing: 0.5px;
 }}
 
 /* ── collapse toggle ── */
 QPushButton[class="collapseBtn"] {{
     text-align: left;
-    padding: 9px 14px;
+    padding: 10px 14px;
     background: transparent;
     color: {_TEXT};
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 600;
     border: none;
     border-radius: 0;
@@ -450,14 +517,14 @@ QPushButton[class="collapseBtn"]:hover {{
 
 /* ── headings ── */
 QLabel[class="pageTitle"] {{
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 700;
     color: {_TEXT};
 }}
 QLabel[class="pageSubtitle"] {{
     font-size: 12px;
     color: {_TEXT2};
-    padding-bottom: 2px;
+    padding-bottom: 4px;
 }}
 
 /* ── metric cards ── */
@@ -467,13 +534,14 @@ QFrame[class="metricCard"] {{
     border-radius: 8px;
 }}
 QLabel[class="metricValue"] {{
-    font-size: 32px;
+    font-size: 30px;
     font-weight: 700;
 }}
 QLabel[class="metricLabel"] {{
     font-size: 10px;
     font-weight: 600;
     color: {_TEXT2};
+    letter-spacing: 0.4px;
 }}
 
 /* ── buttons ── */
@@ -565,10 +633,10 @@ QLineEdit {{
     color: {_TEXT};
     border: 1px solid {_BORDER};
     border-radius: 5px;
-    padding: 4px 10px;
+    padding: 5px 10px;
     font-size: 12.5px;
-    min-height: 12px;
-    max-height: 26px;
+    min-height: 14px;
+    max-height: 28px;
 }}
 QLineEdit:focus {{
     border-color: {_PRIMARY};
@@ -578,7 +646,7 @@ QTextEdit {{
     color: {_TEXT};
     border: 1px solid {_BORDER};
     border-radius: 5px;
-    padding: 4px 10px;
+    padding: 5px 10px;
     font-size: 12.5px;
 }}
 QTextEdit:focus {{
@@ -589,9 +657,9 @@ QComboBox {{
     color: {_TEXT};
     border: 1px solid {_BORDER};
     border-radius: 5px;
-    padding: 4px 10px;
+    padding: 5px 10px;
     font-size: 12.5px;
-    min-height: 12px;
+    min-height: 14px;
 }}
 QComboBox:focus {{
     border-color: {_PRIMARY};
@@ -638,13 +706,13 @@ QTableWidget {{
     background: {_SURFACE};
     alternate-background-color: #131C2B;
     border: 1px solid {_BORDER};
-    border-radius: 5px;
+    border-radius: 6px;
     gridline-color: transparent;
     font-size: 11.5px;
     color: {_TEXT};
 }}
 QTableWidget::item {{
-    padding: 4px 8px;
+    padding: 5px 8px;
     border: none;
     border-bottom: 1px solid rgba(45, 55, 72, 0.3);
 }}
@@ -661,7 +729,8 @@ QHeaderView::section {{
     font-size: 10px;
     border: none;
     border-bottom: 2px solid {_BORDER};
-    padding: 6px 8px;
+    padding: 7px 8px;
+    text-transform: uppercase;
 }}
 
 /* ── scrollbars ── */
@@ -736,14 +805,14 @@ QLabel[class="inlineStatus"] {{
 QLabel[class="statusBanner"] {{
     border: 1px solid {_BORDER};
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 8px 12px;
     font-size: 11.5px;
     font-weight: 600;
 }}
 QLabel[class="statusInfo"] {{
     border: 1px solid {_BORDER};
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 8px 12px;
     font-size: 11.5px;
     font-weight: 600;
     background: rgba(59, 130, 246, 0.10);
@@ -752,7 +821,7 @@ QLabel[class="statusInfo"] {{
 QLabel[class="statusSuccess"] {{
     border: 1px solid {_BORDER};
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 8px 12px;
     font-size: 11.5px;
     font-weight: 600;
     background: rgba(34, 197, 94, 0.10);
@@ -761,7 +830,7 @@ QLabel[class="statusSuccess"] {{
 QLabel[class="statusDanger"] {{
     border: 1px solid {_BORDER};
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 8px 12px;
     font-size: 11.5px;
     font-weight: 600;
     background: rgba(239, 68, 68, 0.12);
@@ -769,14 +838,14 @@ QLabel[class="statusDanger"] {{
 }}
 QTextEdit[class="detailBox"] {{
     font-size: 11.5px;
-    line-height: 1.3;
+    line-height: 1.4;
 }}
 QLabel[class="analystBrief"] {{
     font-size: 12.5px;
     font-weight: 500;
     color: {_TEXT};
     line-height: 1.5;
-    padding: 4px 2px;
+    padding: 6px 4px;
 }}
 QProgressBar {{
     border: 1px solid {_BORDER};
@@ -789,6 +858,91 @@ QProgressBar {{
 QProgressBar::chunk {{
     background-color: {_PRIMARY};
     border-radius: 4px;
+}}
+
+/* ── severity badges ── */
+QLabel[class="severityCritical"] {{
+    background: rgba(239, 68, 68, 0.15);
+    color: {_DANGER};
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 4px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+QLabel[class="severityHigh"] {{
+    background: rgba(245, 158, 11, 0.15);
+    color: {_WARNING};
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 4px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+QLabel[class="severityMedium"] {{
+    background: rgba(59, 130, 246, 0.15);
+    color: {_PRIMARY};
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 4px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+QLabel[class="severityLow"] {{
+    background: rgba(34, 197, 94, 0.15);
+    color: {_ACCENT};
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 4px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+QLabel[class="severityInfo"] {{
+    background: rgba(156, 163, 175, 0.15);
+    color: {_TEXT2};
+    border: 1px solid rgba(156, 163, 175, 0.3);
+    border-radius: 4px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+
+/* ── verdict badges ── */
+QLabel[class="verdictMalicious"] {{
+    background: rgba(239, 68, 68, 0.18);
+    color: {_DANGER};
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: 4px;
+    padding: 3px 12px;
+    font-weight: 700;
+    font-size: 12px;
+}}
+QLabel[class="verdictSuspicious"] {{
+    background: rgba(245, 158, 11, 0.18);
+    color: {_WARNING};
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: 4px;
+    padding: 3px 12px;
+    font-weight: 700;
+    font-size: 12px;
+}}
+QLabel[class="verdictClean"] {{
+    background: rgba(34, 197, 94, 0.18);
+    color: {_ACCENT};
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    border-radius: 4px;
+    padding: 3px 12px;
+    font-weight: 700;
+    font-size: 12px;
+}}
+QLabel[class="verdictUnknown"] {{
+    background: rgba(156, 163, 175, 0.15);
+    color: {_TEXT2};
+    border: 1px solid rgba(156, 163, 175, 0.3);
+    border-radius: 4px;
+    padding: 3px 12px;
+    font-weight: 700;
+    font-size: 12px;
 }}
 
 /* ── dialogs ── */
@@ -830,6 +984,7 @@ class DesktopSecurityApp(QMainWindow):
         self.history_entries: list[dict[str, Any]] = []
         self.last_ioc_rows: list[dict[str, Any]] = []
         self.last_soc_payload: dict[str, Any] | None = None
+        self._soc_analysis_count: int = 0
         self.ioc_file_path: str | None = None
         self.soc_file_path: str | None = None
         self._ioc_thread: QThread | None = None
@@ -870,7 +1025,7 @@ class DesktopSecurityApp(QMainWindow):
 
         brand = QLabel("SOC Workstation")
         brand.setObjectName("brand")
-        brand.setFixedHeight(44)
+        brand.setFixedHeight(48)
         brand.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         col.addWidget(brand)
 
@@ -878,12 +1033,12 @@ class DesktopSecurityApp(QMainWindow):
         rule.setObjectName("sidebarRule")
         rule.setFixedHeight(1)
         col.addWidget(rule)
-        col.addSpacing(6)
+        col.addSpacing(8)
 
         self._nav_buttons: list[QPushButton] = []
         nav_items = [
-            ("\u229E  Home", self.tab_index_home),
-            ("\u25CE  IOC Checker", self.tab_index_ioc),
+            ("\u229E  Dashboard", self.tab_index_home),
+            ("\u25CE  IOC Scanner", self.tab_index_ioc),
             ("\u25C6  SOC Analysis", self.tab_index_soc),
             ("\u2699  Settings", self.tab_index_settings),
         ]
@@ -891,7 +1046,7 @@ class DesktopSecurityApp(QMainWindow):
             btn = QPushButton(f"   {label}")
             btn.setProperty("class", "nav")
             btn.setCheckable(True)
-            btn.setFixedHeight(36)
+            btn.setFixedHeight(38)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _ch, i=idx: self._navigate_to(i))
             col.addWidget(btn)
@@ -900,7 +1055,7 @@ class DesktopSecurityApp(QMainWindow):
         self._history_nav_btn = QPushButton("   \u25D4  History")
         self._history_nav_btn.setProperty("class", "nav")
         self._history_nav_btn.setCheckable(True)
-        self._history_nav_btn.setFixedHeight(36)
+        self._history_nav_btn.setFixedHeight(38)
         self._history_nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._history_nav_btn.setVisible(False)
         self._history_nav_btn.clicked.connect(
@@ -911,7 +1066,7 @@ class DesktopSecurityApp(QMainWindow):
 
         col.addStretch(1)
 
-        footer = QLabel("v1.0.0")
+        footer = QLabel("v3.1.0")
         footer.setObjectName("sidebarFooter")
         col.addWidget(footer)
         return sidebar
@@ -1010,7 +1165,7 @@ class DesktopSecurityApp(QMainWindow):
         return None
 
     def _on_ioc_table_cell_clicked(self, row: int, column: int) -> None:
-        provider_by_column = {5: "virustotal", 6: "abuseipdb", 7: "otx", 8: "threatfox"}
+        provider_by_column = {7: "virustotal", 8: "abuseipdb", 9: "otx", 10: "threatfox"}
         provider = provider_by_column.get(column)
         if provider is None:
             return
@@ -1021,7 +1176,7 @@ class DesktopSecurityApp(QMainWindow):
         if isinstance(url, str) and url:
             QDesktopServices.openUrl(QUrl(url))
 
-    # ── page: home ───────────────────────────────────────────────────────
+    # ── page: home / dashboard ───────────────────────────────────────────
 
     def _build_home_page(self) -> QWidget:
         page, lay = _scrollpage()
@@ -1029,8 +1184,7 @@ class DesktopSecurityApp(QMainWindow):
         title = QLabel("SOC Security Workstation")
         title.setProperty("class", "pageTitle")
         sub = QLabel(
-            "Unified desktop workflow for IOC checking and SOC log analysis.\n"
-            "Use the sidebar or quick-actions below to get started.",
+            "Unified desktop tool for IOC scanning, SOC log analysis, ATT&CK mapping, and correlation insights.",
         )
         sub.setProperty("class", "pageSubtitle")
         sub.setWordWrap(True)
@@ -1045,10 +1199,10 @@ class DesktopSecurityApp(QMainWindow):
             f = QFrame()
             f.setProperty("class", "metricCard")
             ml = QVBoxLayout(f)
-            ml.setContentsMargins(14, 10, 14, 10)
+            ml.setContentsMargins(16, 12, 16, 12)
             ml.setSpacing(2)
             bar = QFrame()
-            bar.setFixedHeight(2)
+            bar.setFixedHeight(3)
             bar.setStyleSheet(f"background: {color}; border: none; border-radius: 1px;")
             ml.addWidget(bar)
             value_lbl.setProperty("class", "metricValue")
@@ -1059,13 +1213,16 @@ class DesktopSecurityApp(QMainWindow):
             ml.addWidget(lbl)
             return f
 
-        self.home_history_metric = QLabel("0")
         self.home_ioc_metric = QLabel("0")
-        self.home_soc_metric = QLabel("No")
+        self.home_malicious_metric = QLabel("0")
+        self.home_soc_metric = QLabel("0")
+        self.home_severity_metric = QLabel("\u2014")
+        self.home_history_metric = QLabel("0")
 
-        mlay.addWidget(_metric(self.home_history_metric, "HISTORY ENTRIES", _PRIMARY))
-        mlay.addWidget(_metric(self.home_ioc_metric, "IOC SCAN ROWS", _ACCENT))
-        mlay.addWidget(_metric(self.home_soc_metric, "SOC ANALYSIS", _WARNING))
+        mlay.addWidget(_metric(self.home_ioc_metric, "IOCS SCANNED", _PRIMARY))
+        mlay.addWidget(_metric(self.home_malicious_metric, "MALICIOUS / SUSPICIOUS", _DANGER))
+        mlay.addWidget(_metric(self.home_soc_metric, "SOC ANALYSES", _ACCENT))
+        mlay.addWidget(_metric(self.home_severity_metric, "HIGHEST SEVERITY", _WARNING))
         mlay.addStretch(1)
         lay.addWidget(metrics_row)
         lay.addSpacing(4)
@@ -1073,14 +1230,14 @@ class DesktopSecurityApp(QMainWindow):
         actions_card, alay = _card("Quick Actions")
         row, rlay = _hrow()
         rlay.setSpacing(12)
-        ioc_btn = _btn("Open IOC Checker")
-        ioc_btn.setFixedHeight(34)
+        ioc_btn = _btn("Scan IOCs")
+        ioc_btn.setFixedHeight(36)
         ioc_btn.clicked.connect(lambda: self._navigate_to(self.tab_index_ioc))
-        soc_btn = _btn("Open SOC Analysis")
-        soc_btn.setFixedHeight(34)
+        soc_btn = _btn("Analyze Logs")
+        soc_btn.setFixedHeight(36)
         soc_btn.clicked.connect(lambda: self._navigate_to(self.tab_index_soc))
-        settings_btn = _btn("Open Settings", "secondary")
-        settings_btn.setFixedHeight(34)
+        settings_btn = _btn("Settings", "secondary")
+        settings_btn.setFixedHeight(36)
         settings_btn.clicked.connect(lambda: self._navigate_to(self.tab_index_settings))
         rlay.addWidget(ioc_btn)
         rlay.addWidget(soc_btn)
@@ -1090,8 +1247,8 @@ class DesktopSecurityApp(QMainWindow):
         lay.addWidget(actions_card)
         lay.addSpacing(4)
 
-        activity_card, activity_lay = _card("Recent Activity")
-        self.home_recent_activity = QLabel("No session activity yet. Run an IOC scan or SOC analysis.")
+        activity_card, activity_lay = _card("Session Activity")
+        self.home_recent_activity = QLabel("No activity yet. Run an IOC scan or SOC analysis to get started.")
         self.home_recent_activity.setProperty("class", "summary")
         self.home_recent_activity.setWordWrap(True)
         activity_lay.addWidget(self.home_recent_activity)
@@ -1099,52 +1256,67 @@ class DesktopSecurityApp(QMainWindow):
 
         summary_row, srow_lay = _hrow()
         srow_lay.setSpacing(12)
-        self.home_ioc_summary = QLabel("No IOC scan yet.")
-        self.home_ioc_summary.setWordWrap(True)
-        self.home_ioc_summary.setProperty("class", "summary")
-        self.home_soc_summary = QLabel("No SOC analysis yet.")
-        self.home_soc_summary.setWordWrap(True)
-        self.home_soc_summary.setProperty("class", "summary")
 
         ioc_summary_card, ioc_summary_lay = _card("Last IOC Scan")
+        self.home_ioc_summary = QLabel("No IOC scan results yet.")
+        self.home_ioc_summary.setWordWrap(True)
+        self.home_ioc_summary.setProperty("class", "summary")
         ioc_summary_lay.addWidget(self.home_ioc_summary)
+        self.home_ioc_findings = QVBoxLayout()
+        self.home_ioc_findings.setSpacing(3)
+        ioc_summary_lay.addLayout(self.home_ioc_findings)
+
         soc_summary_card, soc_summary_lay = _card("Last SOC Analysis")
+        self.home_soc_summary = QLabel("No SOC analysis results yet.")
+        self.home_soc_summary.setWordWrap(True)
+        self.home_soc_summary.setProperty("class", "summary")
         soc_summary_lay.addWidget(self.home_soc_summary)
+
         srow_lay.addWidget(ioc_summary_card, 1)
         srow_lay.addWidget(soc_summary_card, 1)
         lay.addWidget(summary_row)
+
+        technique_card, tech_lay = _card("Observed ATT&CK Techniques")
+        self.home_techniques_label = QLabel("No techniques observed yet.")
+        self.home_techniques_label.setProperty("class", "summary")
+        self.home_techniques_label.setWordWrap(True)
+        tech_lay.addWidget(self.home_techniques_label)
+        self.home_techniques_list = QVBoxLayout()
+        self.home_techniques_list.setSpacing(3)
+        tech_lay.addLayout(self.home_techniques_list)
+        lay.addWidget(technique_card)
+
         lay.addStretch(1)
         return page
 
-    # ── page: IOC checker ────────────────────────────────────────────────
+    # ── page: IOC scanner ────────────────────────────────────────────────
 
     def _build_ioc_page(self) -> QWidget:
         page, lay = _scrollpage()
 
-        title = QLabel("IOC Checker")
+        title = QLabel("IOC Scanner")
         title.setProperty("class", "pageTitle")
         sub = QLabel(
-            "Submit and scan Indicators of Compromise against threat-intelligence providers.",
+            "Scan Indicators of Compromise against multiple threat-intelligence providers and get unified verdicts.",
         )
         sub.setProperty("class", "pageSubtitle")
         sub.setWordWrap(True)
         lay.addWidget(title)
         lay.addWidget(sub)
 
-        # -- input card --
         inp_card, inp = _card("Input")
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.ioc_single_input = QLineEdit()
-        self.ioc_single_input.setPlaceholderText("e.g. 8.8.8.8 or evil.com")
-        self.ioc_single_input.setMaximumWidth(480)
+        self.ioc_single_input.setPlaceholderText("e.g. 8.8.8.8, evil.com, or a file hash")
+        self.ioc_single_input.setMaximumWidth(520)
         form.addRow("Single IOC:", self.ioc_single_input)
 
         self.ioc_bulk_input = QTextEdit()
         self.ioc_bulk_input.setPlaceholderText(
-            "Paste one IOC per line or comma-separated IOC list.",
+            "Paste one IOC per line, or comma-separated values.",
         )
         self.ioc_bulk_input.setFixedHeight(72)
         form.addRow("Bulk paste:", self.ioc_bulk_input)
@@ -1166,7 +1338,6 @@ class DesktopSecurityApp(QMainWindow):
         inp.addLayout(form)
         lay.addWidget(inp_card)
 
-        # -- options card --
         opt_card, opt = _card("Options")
         opt_form = QFormLayout()
         opt_form.setSpacing(10)
@@ -1187,7 +1358,6 @@ class DesktopSecurityApp(QMainWindow):
         opt.addLayout(opt_form)
         lay.addWidget(opt_card)
 
-        # -- action row --
         actions_row, alay = _hrow()
         alay.setSpacing(10)
         scan_btn = _btn("Scan IOCs", "accent")
@@ -1205,38 +1375,40 @@ class DesktopSecurityApp(QMainWindow):
         alay.addStretch(1)
         lay.addWidget(actions_row)
 
-        self.ioc_run_status = QLabel("IOC scanner idle.")
-        self._set_banner(self.ioc_run_status, "IOC scanner idle.", "info")
+        self.ioc_run_status = QLabel("Ready to scan.")
+        self._set_banner(self.ioc_run_status, "Ready to scan.", "info")
         self.ioc_progress = QProgressBar()
         self.ioc_progress.setVisible(False)
         self.ioc_progress.setTextVisible(False)
         lay.addWidget(self.ioc_run_status)
         lay.addWidget(self.ioc_progress)
 
-        # -- results card --
         res_card, res = _card("Results")
-        self.ioc_summary_label = QLabel("No IOC scan has been run in this session.")
+        self.ioc_summary_label = QLabel("Submit IOCs above to start scanning.")
         self.ioc_summary_label.setProperty("class", "summary")
         self.ioc_summary_label.setWordWrap(True)
         res.addWidget(self.ioc_summary_label)
 
         self.ioc_table = _table([
-            "IOC", "Detected Type", "Effective Type", "Status", "Score",
+            "IOC", "Verdict", "Confidence", "Detected Type", "Effective Type",
+            "Status", "Score",
             "VirusTotal", "AbuseIPDB", "OTX", "ThreatFox",
             "Provider Summary", "Errors",
         ])
         for col, width in (
-            (0, 180),
-            (1, 105),
-            (2, 105),
+            (0, 190),
+            (1, 100),
+            (2, 80),
             (3, 100),
-            (4, 60),
-            (5, 95),
-            (6, 95),
-            (7, 80),
+            (4, 100),
+            (5, 90),
+            (6, 55),
+            (7, 90),
             (8, 90),
-            (9, 260),
-            (10, 70),
+            (9, 75),
+            (10, 85),
+            (11, 200),
+            (12, 55),
         ):
             self.ioc_table.setColumnWidth(col, width)
         self.ioc_table.cellClicked.connect(self._on_ioc_table_cell_clicked)
@@ -1263,14 +1435,13 @@ class DesktopSecurityApp(QMainWindow):
         title = QLabel("SOC Analysis")
         title.setProperty("class", "pageTitle")
         sub = QLabel(
-            "Analyze raw security logs for entities, ATT&CK mappings, and response guidance.",
+            "Analyze raw security logs to extract entities, map ATT&CK techniques, and generate response guidance.",
         )
         sub.setProperty("class", "pageSubtitle")
         sub.setWordWrap(True)
         lay.addWidget(title)
         lay.addWidget(sub)
 
-        # -- input card --
         inp_card, inp = _card("Input")
         form = QFormLayout()
         form.setSpacing(10)
@@ -1278,9 +1449,9 @@ class DesktopSecurityApp(QMainWindow):
 
         self.soc_raw_log_input = QTextEdit()
         self.soc_raw_log_input.setPlaceholderText(
-            "Paste raw log content here (JSON or plain text).",
+            "Paste raw log content here (JSON, syslog, or plain text).",
         )
-        self.soc_raw_log_input.setFixedHeight(78)
+        self.soc_raw_log_input.setFixedHeight(82)
         form.addRow("Raw log:", self.soc_raw_log_input)
 
         file_row, flay = _hrow()
@@ -1300,7 +1471,6 @@ class DesktopSecurityApp(QMainWindow):
         inp.addLayout(form)
         lay.addWidget(inp_card)
 
-        # -- options card --
         opt_card, opt = _card("Options")
         opt_form = QFormLayout()
         opt_form.setSpacing(10)
@@ -1312,7 +1482,6 @@ class DesktopSecurityApp(QMainWindow):
         opt.addLayout(opt_form)
         lay.addWidget(opt_card)
 
-        # -- action row --
         actions_row, alay = _hrow()
         alay.setSpacing(10)
         analyze_btn = _btn("Analyze Log", "accent")
@@ -1330,21 +1499,26 @@ class DesktopSecurityApp(QMainWindow):
         alay.addStretch(1)
         lay.addWidget(actions_row)
 
-        self.soc_run_status = QLabel("SOC analysis idle.")
-        self._set_banner(self.soc_run_status, "SOC analysis idle.", "info")
+        self.soc_run_status = QLabel("Ready to analyze.")
+        self._set_banner(self.soc_run_status, "Ready to analyze.", "info")
         self.soc_progress = QProgressBar()
         self.soc_progress.setVisible(False)
         self.soc_progress.setTextVisible(False)
         lay.addWidget(self.soc_run_status)
         lay.addWidget(self.soc_progress)
 
-        # -- summary --
-        self.soc_summary_label = QLabel("No SOC analysis result available.")
+        sev_row, sev_lay = _hrow()
+        sev_lay.setSpacing(10)
+        self.soc_severity_label = QLabel("")
+        self.soc_severity_label.setFixedWidth(0)
+        self.soc_severity_label.setVisible(False)
+        sev_lay.addWidget(self.soc_severity_label)
+        self.soc_summary_label = QLabel("Submit a log above to start analysis.")
         self.soc_summary_label.setProperty("class", "summary")
         self.soc_summary_label.setWordWrap(True)
-        lay.addWidget(self.soc_summary_label)
+        sev_lay.addWidget(self.soc_summary_label, 1)
+        lay.addWidget(sev_row)
 
-        # -- analyst brief card --
         brief_card, brief_lay = _card("What Happened \u2014 Analyst Brief")
         self.soc_analyst_brief_label = QLabel(
             "Run an analysis to generate the analyst brief."
@@ -1369,7 +1543,6 @@ class DesktopSecurityApp(QMainWindow):
             soc_top_lay.addWidget(label)
         lay.addWidget(soc_top_card)
 
-        # -- collapsible result sections --
         sec_entities = _Collapsible("Extracted Entities", expanded=False)
         self.soc_section_entities = sec_entities
         self.soc_entities_table = _table(
@@ -1402,6 +1575,26 @@ class DesktopSecurityApp(QMainWindow):
         sec_enrich.body().addWidget(self.soc_enrichment_table)
         lay.addWidget(sec_enrich)
 
+        sec_summary = _Collapsible("Investigation Summary")
+        self.soc_section_investigation = sec_summary
+        self.soc_investigation_text = QTextEdit()
+        self.soc_investigation_text.setReadOnly(True)
+        self.soc_investigation_text.setMinimumHeight(100)
+        self.soc_investigation_text.setText("Run an analysis to generate the investigation summary.")
+        sec_summary.body().addWidget(self.soc_investigation_text)
+        lay.addWidget(sec_summary)
+
+        sec_correlation = _Collapsible("Correlation Insights")
+        self.soc_section_correlation = sec_correlation
+        self.soc_correlation_list = QVBoxLayout()
+        self.soc_correlation_list.setSpacing(4)
+        self.soc_correlation_empty = QLabel("No correlation insights yet. Run multiple analyses to detect patterns.")
+        self.soc_correlation_empty.setProperty("class", "summary")
+        self.soc_correlation_empty.setWordWrap(True)
+        sec_correlation.body().addLayout(self.soc_correlation_list)
+        sec_correlation.body().addWidget(self.soc_correlation_empty)
+        lay.addWidget(sec_correlation)
+
         return page
 
     # ── page: settings ───────────────────────────────────────────────────
@@ -1416,7 +1609,6 @@ class DesktopSecurityApp(QMainWindow):
         lay.addWidget(title)
         lay.addWidget(sub)
 
-        # -- providers + keys card --
         prov_card, prov = _card("Providers & API Keys")
         self.provider_checkboxes: dict[str, QCheckBox] = {}
         self.api_key_inputs: dict[str, QLineEdit] = {}
@@ -1449,18 +1641,16 @@ class DesktopSecurityApp(QMainWindow):
             prov.addWidget(row)
         lay.addWidget(prov_card)
 
-        # -- session options card --
         opt_card, opt_lay = _card("Session Options")
         self.history_toggle = QCheckBox("Enable in-session history")
         self.history_toggle.setChecked(False)
         opt_lay.addWidget(self.history_toggle)
         lay.addWidget(opt_card)
 
-        # -- apply button --
         actions_row, alay = _hrow()
         alay.setSpacing(12)
         apply_btn = _btn("Apply Session Settings")
-        apply_btn.setFixedHeight(34)
+        apply_btn.setFixedHeight(36)
         apply_btn.clicked.connect(self._apply_settings)
         alay.addWidget(apply_btn)
         alay.addStretch(1)
@@ -1591,6 +1781,12 @@ class DesktopSecurityApp(QMainWindow):
 
     def _on_ioc_scan_finished(self, rows: list[dict[str, Any]]) -> None:
         self.last_ioc_rows = rows
+        for row in rows:
+            correlation_store.record_ioc(
+                str(row.get("ioc", "")),
+                str(row.get("status", "unknown")),
+                "ioc_scan",
+            )
         self._populate_ioc_table(rows)
         summary = summarize_ioc_rows(rows)
         summary_text = (
@@ -1608,7 +1804,7 @@ class DesktopSecurityApp(QMainWindow):
         self.ioc_summary_label.setText(summary_text)
         self._set_banner(
             self.ioc_run_status,
-            f"IOC scan complete: {summary['total']} rows, {summary['malicious']} malicious.",
+            f"IOC scan complete: {summary['total']} scanned, {summary['malicious']} malicious, {summary['suspicious']} suspicious.",
             "success",
         )
         self._append_history(
@@ -1637,27 +1833,47 @@ class DesktopSecurityApp(QMainWindow):
             ioc_item = QTableWidgetItem(str(row.get("ioc", "")))
             ioc_item.setData(Qt.ItemDataRole.UserRole, row)
             self.ioc_table.setItem(idx, 0, ioc_item)
-            self.ioc_table.setItem(idx, 1, QTableWidgetItem(str(row.get("detected_type", ""))))
-            self.ioc_table.setItem(idx, 2, QTableWidgetItem(str(row.get("effective_type", ""))))
-            self.ioc_table.setItem(idx, 3, _status_item(str(row.get("status", "unknown"))))
 
-            self.ioc_table.setItem(idx, 4, _score_item(row.get("score", 0)))
+            verdict_text = str(row.get("verdict", "Unknown"))
+            verdict_label, verdict_color = _verdict_tone(verdict_text)
+            verdict_item = QTableWidgetItem(f" {verdict_label} ")
+            verdict_item.setBackground(QColor(verdict_color))
+            verdict_item.setForeground(QColor("#FFFFFF"))
+            verdict_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            verdict_item.setToolTip(str(row.get("verdict_reasoning", "")))
+            self.ioc_table.setItem(idx, 1, verdict_item)
+
+            conf_val = int(row.get("verdict_confidence", 0) or 0)
+            conf_item = QTableWidgetItem(f"{conf_val}%")
+            conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if conf_val >= 70:
+                conf_item.setForeground(QColor(_ACCENT))
+            elif conf_val >= 40:
+                conf_item.setForeground(QColor(_WARNING))
+            else:
+                conf_item.setForeground(QColor(_TEXT2))
+            self.ioc_table.setItem(idx, 2, conf_item)
+
+            self.ioc_table.setItem(idx, 3, QTableWidgetItem(str(row.get("detected_type", ""))))
+            self.ioc_table.setItem(idx, 4, QTableWidgetItem(str(row.get("effective_type", ""))))
+            self.ioc_table.setItem(idx, 5, _status_item(str(row.get("status", "unknown"))))
+            self.ioc_table.setItem(idx, 6, _score_item(row.get("score", 0)))
 
             effective_type = str(row.get("effective_type", "unknown"))
             ioc_value = str(row.get("ioc", ""))
-            for col, provider_key in ((5, "virustotal"), (6, "abuseipdb"), (7, "otx"), (8, "threatfox")):
+            for col, provider_key in ((7, "virustotal"), (8, "abuseipdb"), (9, "otx"), (10, "threatfox")):
                 status_text = str(row.get(provider_key, "n/a"))
                 status_item = _status_item(status_text)
                 link = self._provider_lookup_url(provider_key, ioc_value, effective_type)
                 if link:
                     status_item.setData(Qt.ItemDataRole.UserRole, link)
-                    status_item.setToolTip(f"Open in {provider_key}")
+                    status_item.setToolTip(f"Click to open in {provider_key}")
                 self.ioc_table.setItem(idx, col, status_item)
 
             prov_summary = _format_provider_summary(str(row.get("provider_summary", "")))
             prov_item = QTableWidgetItem(prov_summary)
             prov_item.setToolTip(str(row.get("provider_summary", "")))
-            self.ioc_table.setItem(idx, 9, prov_item)
+            self.ioc_table.setItem(idx, 11, prov_item)
 
             error_list = row.get("errors") or []
             error_count = int(row.get("error_count", 0) or 0)
@@ -1669,9 +1885,9 @@ class DesktopSecurityApp(QMainWindow):
                 errors.setForeground(QColor(_DANGER))
             else:
                 errors.setForeground(QColor(_TEXT2))
-            self.ioc_table.setItem(idx, 10, errors)
+            self.ioc_table.setItem(idx, 12, errors)
 
-            _, accent_color = _status_tone(str(row.get("status", "unknown")))
+            _, accent_color = _verdict_tone(str(row.get("verdict", "Unknown")))
             for col in range(self.ioc_table.columnCount()):
                 table_item = self.ioc_table.item(idx, col)
                 if table_item is None:
@@ -1679,7 +1895,7 @@ class DesktopSecurityApp(QMainWindow):
                 if col == 0:
                     table_item.setBackground(QColor(accent_color).lighter(160))
                 table_item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignCenter if col in {3, 4, 5, 6, 7, 8, 10}
+                    Qt.AlignmentFlag.AlignCenter if col in {1, 2, 5, 6, 7, 8, 9, 10, 12}
                     else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 )
         self._update_ioc_detail_panel()
@@ -1742,6 +1958,8 @@ class DesktopSecurityApp(QMainWindow):
         self._soc_thread.start()
 
     def _on_soc_analysis_finished(self, payload: dict[str, Any]) -> None:
+        self._soc_analysis_count += 1
+
         if not payload.get("ok"):
             message = str(payload.get("error", "SOC analysis failed"))
             reason = str(payload.get("reason", "")).strip().lower()
@@ -1754,6 +1972,13 @@ class DesktopSecurityApp(QMainWindow):
                 if not brief:
                     brief = generate_analyst_brief(payload)
                 self.soc_analyst_brief_label.setText(brief)
+                self.soc_severity_label.setText("  INFO  ")
+                self.soc_severity_label.setProperty("class", "severityInfo")
+                self.soc_severity_label.style().unpolish(self.soc_severity_label)
+                self.soc_severity_label.style().polish(self.soc_severity_label)
+                self.soc_severity_label.setFixedWidth(100)
+                self.soc_severity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.soc_severity_label.setVisible(True)
                 self.soc_top_technique.setText("Technique: Not mapped")
                 self.soc_top_confidence.setText("Confidence: N/A (no mapping)")
                 self.soc_top_source.setText("Mapping Source: none")
@@ -1773,6 +1998,8 @@ class DesktopSecurityApp(QMainWindow):
                 self.soc_section_mitre.set_expanded(False)
                 self.soc_section_epc.set_expanded(False)
                 self.soc_section_enrichment.set_expanded(False)
+                self._populate_investigation_summary(payload)
+                self._populate_correlation_insights(payload)
                 self._set_banner(
                     self.soc_run_status,
                     "SOC analysis completed: no ATT&CK mapping was produced.",
@@ -1804,19 +2031,34 @@ class DesktopSecurityApp(QMainWindow):
         enrichment_count = len(enrichment) if isinstance(enrichment, list) else 0
         summary_text, banner_text, banner_tone = _soc_summary_and_banner(payload, enrich_used)
         self.soc_summary_label.setText(summary_text)
+
+        severity = assess_severity(payload)
+        sev_text, sev_color = _severity_label(severity)
+        self.soc_severity_label.setText(f"  {sev_text}  ")
+        self.soc_severity_label.setProperty("class", f"severity{severity.capitalize()}")
+        self.soc_severity_label.style().unpolish(self.soc_severity_label)
+        self.soc_severity_label.style().polish(self.soc_severity_label)
+        self.soc_severity_label.setFixedWidth(100)
+        self.soc_severity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.soc_severity_label.setVisible(True)
+
         self.soc_top_technique.setText(
             f"Technique: {summary.get('technique_id', 'N/A')} ({summary.get('technique_name', 'N/A')})",
         )
         if confidence_value < 0.6:
-            self.soc_top_confidence.setText(f"Confidence: {confidence_value:.3f} (low)")
+            self.soc_top_confidence.setText(f"Confidence: {confidence_value:.0%} (low)")
         else:
-            self.soc_top_confidence.setText(f"Confidence: {confidence_value:.3f}")
+            self.soc_top_confidence.setText(f"Confidence: {confidence_value:.0%}")
         self.soc_top_source.setText(f"Mapping Source: {summary.get('mapping_source', 'unknown')}")
         self.soc_top_enrichment.setText(_soc_enrichment_label(enrich_used, enrichment_count))
         self.soc_section_mitre.set_expanded(True)
         self.soc_section_entities.set_expanded(True)
-        self.soc_section_epc.set_expanded(False)
+        self.soc_section_epc.set_expanded(True)
         self.soc_section_enrichment.set_expanded(enrich_used and enrichment_count > 0)
+
+        self._populate_investigation_summary(payload)
+        self._populate_correlation_insights(payload)
+
         self._set_banner(self.soc_run_status, banner_text, banner_tone)
         self._append_history("SOC analysis", "Analyzed one log event.", payload)
         self._update_home_metrics()
@@ -1901,6 +2143,54 @@ class DesktopSecurityApp(QMainWindow):
             summary_item = QTableWidgetItem(_format_provider_summary(provider_summary))
             summary_item.setToolTip(provider_summary)
             self.soc_enrichment_table.setItem(r, 4, summary_item)
+
+    def _populate_investigation_summary(self, payload: dict[str, Any]) -> None:
+        inv = payload.get("investigation_summary", {})
+        if not isinstance(inv, dict) or not inv:
+            inv = generate_investigation_summary(payload)
+        text = (
+            f"WHAT HAPPENED\n{inv.get('what_happened', 'N/A')}\n\n"
+            f"SEVERITY ASSESSMENT\n{inv.get('severity_assessment', 'N/A')}\n\n"
+            f"RECOMMENDED NEXT STEPS\n{inv.get('next_steps', 'N/A')}"
+        )
+        self.soc_investigation_text.setText(text)
+        self.soc_section_investigation.set_expanded(True)
+
+    def _populate_correlation_insights(self, payload: dict[str, Any]) -> None:
+        while self.soc_correlation_list.count():
+            child = self.soc_correlation_list.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        insights = payload.get("correlation_insights", [])
+        if not isinstance(insights, list):
+            insights = []
+        self.soc_correlation_empty.setVisible(len(insights) == 0)
+
+        type_icons = {
+            "repeated_ioc": "\u26A0",
+            "repeated_technique": "\u21BB",
+            "multi_stage": "\u26D4",
+        }
+        type_colors = {
+            "repeated_ioc": _WARNING,
+            "repeated_technique": _PRIMARY,
+            "multi_stage": _DANGER,
+        }
+        for insight in insights:
+            icon = type_icons.get(insight.get("type", ""), "\u2022")
+            color = type_colors.get(insight.get("type", ""), _TEXT2)
+            label = QLabel(f"{icon}  {insight.get('summary', '')}")
+            label.setWordWrap(True)
+            label.setStyleSheet(
+                f"color: {color}; font-size: 12px; font-weight: 500; "
+                f"padding: 6px 10px; background: rgba(255,255,255,0.03); "
+                f"border-left: 3px solid {color}; border-radius: 3px;"
+            )
+            self.soc_correlation_list.addWidget(label)
+
+        if insights:
+            self.soc_section_correlation.set_expanded(True)
 
     # ── settings ─────────────────────────────────────────────────────────
 
@@ -2060,7 +2350,19 @@ class DesktopSecurityApp(QMainWindow):
     def _update_home_metrics(self) -> None:
         self.home_history_metric.setText(str(len(self.history_entries)))
         self.home_ioc_metric.setText(str(len(self.last_ioc_rows)))
-        self.home_soc_metric.setText("Yes" if self.last_soc_payload else "No")
+        self.home_soc_metric.setText(str(self._soc_analysis_count))
+
+        ioc_summary = summarize_ioc_rows(self.last_ioc_rows)
+        malicious_count = ioc_summary["malicious"]
+        suspicious_count = ioc_summary["suspicious"]
+        self.home_malicious_metric.setText(f"{malicious_count + suspicious_count}")
+
+        if self.last_soc_payload:
+            severity = assess_severity(self.last_soc_payload)
+            self.home_severity_metric.setText(severity.upper())
+        else:
+            self.home_severity_metric.setText("\u2014")
+
         if self.history_entries:
             latest = self.history_entries[-1]
             self.home_recent_activity.setText(
@@ -2068,17 +2370,29 @@ class DesktopSecurityApp(QMainWindow):
             )
         else:
             self.home_recent_activity.setText(
-                "No session activity yet. Run an IOC scan or SOC analysis.",
+                "No activity yet. Run an IOC scan or SOC analysis to get started.",
             )
 
+        while self.home_ioc_findings.count():
+            child = self.home_ioc_findings.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
         if self.last_ioc_rows:
-            ioc_summary = summarize_ioc_rows(self.last_ioc_rows)
             self.home_ioc_summary.setText(
                 "Total: {total} | Malicious: {malicious} | Suspicious: {suspicious} | "
                 "Clean: {clean} | Unknown: {unknown}".format(**ioc_summary),
             )
+            notable = [r for r in self.last_ioc_rows if str(r.get("verdict", "")).lower() in {"malicious", "suspicious"}]
+            for r in notable[:5]:
+                verdict = str(r.get("verdict", "Unknown"))
+                _, color = _verdict_tone(verdict)
+                lbl = QLabel(f"\u2022 {r.get('ioc', '?')} \u2014 {verdict.upper()} ({r.get('verdict_confidence', 0)}%)")
+                lbl.setStyleSheet(f"color: {color}; font-size: 11.5px; font-weight: 500; padding: 1px 0;")
+                lbl.setWordWrap(True)
+                self.home_ioc_findings.addWidget(lbl)
         else:
-            self.home_ioc_summary.setText("No IOC scan yet.")
+            self.home_ioc_summary.setText("No IOC scan results yet.")
 
         if self.last_soc_payload:
             summary = self.last_soc_payload.get("summary", {})
@@ -2096,9 +2410,11 @@ class DesktopSecurityApp(QMainWindow):
                         "entity_count": int(audit.get("entity_count", len(partial_result.get("entities", []) or [])) or 0),
                     }
             if isinstance(summary, dict) and summary:
+                sev = assess_severity(self.last_soc_payload)
                 self.home_soc_summary.setText(
-                    "Technique: {technique_id} ({technique_name}) | Confidence: {confidence:.3f} | "
-                    "Source: {mapping_source}".format(
+                    "Severity: {severity} | Technique: {technique_id} ({technique_name}) | "
+                    "Confidence: {confidence:.0%} | Source: {mapping_source}".format(
+                        severity=sev.upper(),
                         technique_id=summary.get("technique_id", "N/A"),
                         technique_name=summary.get("technique_name", "N/A"),
                         confidence=float(summary.get("confidence", 0.0) or 0.0),
@@ -2108,7 +2424,31 @@ class DesktopSecurityApp(QMainWindow):
             else:
                 self.home_soc_summary.setText("SOC analysis was run, but no summary is available.")
         else:
-            self.home_soc_summary.setText("No SOC analysis yet.")
+            self.home_soc_summary.setText("No SOC analysis results yet.")
+
+        while self.home_techniques_list.count():
+            child = self.home_techniques_list.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        techniques = correlation_store._technique_history
+        if techniques:
+            self.home_techniques_label.setVisible(False)
+            seen: set[str] = set()
+            for entry in reversed(techniques):
+                tid = entry.get("technique_id", "")
+                if tid in seen:
+                    continue
+                seen.add(tid)
+                conf = float(entry.get("confidence", 0))
+                lbl = QLabel(f"\u2022 {tid} ({entry.get('technique_name', '')}) \u2014 {conf:.0%} confidence")
+                lbl.setStyleSheet(f"color: {_TEXT}; font-size: 11.5px; padding: 1px 0;")
+                lbl.setWordWrap(True)
+                self.home_techniques_list.addWidget(lbl)
+                if len(seen) >= 8:
+                    break
+        else:
+            self.home_techniques_label.setVisible(True)
 
 
 def main() -> int:

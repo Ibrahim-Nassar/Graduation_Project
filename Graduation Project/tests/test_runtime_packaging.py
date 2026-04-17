@@ -341,7 +341,12 @@ class SocExportTests(unittest.TestCase):
                 "entities": [{"type": "username", "value": "alice"}],
                 "attack_mapping": [],
                 "epc": {},
-                "audit": {"mapping_source": "none", "entity_count": 1, "mapping_count": 0},
+                "audit": {
+                    "mapping_source": "none",
+                    "entity_count": 1,
+                    "mapping_count": 0,
+                    "ioc_enrichment": [{"ioc": "10.0.0.5", "status": "clean"}],
+                },
             },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -351,6 +356,46 @@ class SocExportTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
         self.assertTrue(any(row["section"] == "summary" and row["item"] == "technique_id" and row["value"] == "N/A" for row in rows))
         self.assertTrue(any(row["section"] == "entity" and row["item"] == "1:username" and row["value"] == "alice" for row in rows))
+        self.assertTrue(
+            any(
+                row["section"] == "ioc_enrichment"
+                and row["item"] == "1:10.0.0.5"
+                and row["value"] == "clean"
+                for row in rows
+            )
+        )
+
+    def test_export_soc_csv_handles_analyze_no_mapping_partial_result_payload(self) -> None:
+        payload = analyze_soc_log(
+            "authentication failed user=alice src_ip=10.0.0.5 domain=evil.example.com",
+            enrich_iocs=True,
+        )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload.get("reason"), "no_mapping")
+        self.assertIsInstance(payload.get("partial_result"), dict)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "soc_partial_from_wrapper.csv"
+            export_soc_csv(str(csv_path), payload)
+            with csv_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertTrue(
+            any(
+                row["section"] == "summary"
+                and row["item"] == "technique_id"
+                and row["value"] == "N/A"
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row["section"] == "entity"
+                and row["item"] == "1:username"
+                and row["value"] == "alice"
+                for row in rows
+            )
+        )
 
 
 class PackagingSensitivePathTests(unittest.TestCase):
@@ -417,6 +462,17 @@ class PackagingSensitivePathTests(unittest.TestCase):
         self.assertIs(pipeline_module._IOC_MODULE_CACHE, fake_module)
         self.assertIn("ioc_enrichment", calls)
         self.assertIn(str(search_path), sys.path)
+
+
+class IocVerdictInScanTests(unittest.TestCase):
+    def test_scan_iocs_rows_contain_verdict_fields(self) -> None:
+        fake = _FakeIocModuleForScan()
+        with patch("src.desktop_services._load_ioc_module", return_value=fake):
+            rows = scan_iocs(["8.8.8.8"], manual_ioc_type=None, providers=None, api_keys=None)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("verdict", rows[0])
+        self.assertIn("verdict_confidence", rows[0])
+        self.assertIn("verdict_reasoning", rows[0])
 
 
 class AppEntrySmokeTests(unittest.TestCase):

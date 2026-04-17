@@ -36,6 +36,35 @@ KV_VALUE_RE = r"(?:\"([^\"]+)\"|'([^']+)'|([^\s,;]+))"
 TIMESTAMP_RE = re.compile(
     r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\b"
 )
+SCHTASKS_RE = re.compile(
+    r"(?i)\b(?:schtasks(?:\.exe)?|at(?:\.exe)?\s+\d|crontab)\b"
+)
+TASK_CREATE_RE = re.compile(
+    r"(?i)(?:schtasks\s+/create|new-scheduledtask|register-scheduledtask)"
+)
+CRED_DUMP_RE = re.compile(
+    r"(?i)\b(?:mimikatz|sekurlsa|procdump(?:\.exe)?|comsvcs\.dll|credential[_\s]*dump)\b"
+)
+LSASS_ACCESS_RE = re.compile(
+    r"(?i)(?:lsass\.(?:exe|dmp)|procdump.*lsass|comsvcs\.dll.*(?:mini|full)dump)"
+)
+LOG_CLEAR_RE = re.compile(
+    r"(?i)(?:wevtutil\s+cl|clear-eventlog|remove-eventlog|del\s+[^\n]*\.evtx)"
+)
+TIMESTOMP_RE = re.compile(r"(?i)\b(?:timestomp|setfileinfo)\b")
+REMOTE_SVC_RE = re.compile(
+    r"(?i)\b(?:psexec(?:\.exe)?|paexec(?:\.exe)?|winrm|invoke-command\b|"
+    r"new-pssession|enter-pssession|mstsc(?:\.exe)?)\b"
+)
+LATERAL_RE = re.compile(
+    r"(?i)(?:wmic\s+/node:|net\s+use\s+\\\\|copy\s+\\\\|xcopy\s+\\\\)"
+)
+PROC_INJECT_RE = re.compile(
+    r"(?i)\b(?:createremotethread|ntqueueapcthread|virtualalloc(?:ex)?|"
+    r"writeprocessmemory|rtlcreateuserthread|queueuserapc|"
+    r"inject(?:ed|ion)?(?:\s+into|\s+process))\b"
+)
+
 IOC_ENTITY_TO_SCAN_TYPE = {
     "ipv4": "ip",
     "domain": "domain",
@@ -455,6 +484,91 @@ def _build_attack_mappings(
             )
         )
 
+    schtasks_match = SCHTASKS_RE.search(raw_log)
+    task_create_match = TASK_CREATE_RE.search(raw_log)
+    if schtasks_match and (task_create_match or "/tn" in lowered or "create" in normalized_command):
+        evidence = [schtasks_match.group(0)]
+        if task_create_match:
+            evidence.append(task_create_match.group(0))
+        mappings.append(
+            AttackMapping(
+                technique_id="T1053",
+                technique_name="Scheduled Task/Job",
+                confidence=0.85,
+                rationale="Scheduled task creation detected, potentially establishing persistence.",
+                evidence_refs=evidence[:3],
+            )
+        )
+
+    cred_dump_match = CRED_DUMP_RE.search(raw_log)
+    lsass_match = LSASS_ACCESS_RE.search(raw_log)
+    if cred_dump_match or lsass_match:
+        evidence = []
+        if cred_dump_match:
+            evidence.append(cred_dump_match.group(0))
+        if lsass_match and (not cred_dump_match or lsass_match.group(0) != cred_dump_match.group(0)):
+            evidence.append(lsass_match.group(0))
+        if not evidence:
+            evidence = [raw_log[:80] or "raw_log"]
+        conf = 0.92 if (cred_dump_match and lsass_match) else 0.85
+        mappings.append(
+            AttackMapping(
+                technique_id="T1003",
+                technique_name="OS Credential Dumping",
+                confidence=conf,
+                rationale="Credential dumping tool or LSASS memory access detected.",
+                evidence_refs=evidence[:3],
+            )
+        )
+
+    log_clear_match = LOG_CLEAR_RE.search(raw_log)
+    timestomp_match = TIMESTOMP_RE.search(raw_log)
+    if log_clear_match or timestomp_match:
+        evidence = []
+        if log_clear_match:
+            evidence.append(log_clear_match.group(0))
+        if timestomp_match:
+            evidence.append(timestomp_match.group(0))
+        mappings.append(
+            AttackMapping(
+                technique_id="T1070",
+                technique_name="Indicator Removal",
+                confidence=0.9,
+                rationale="Evidence of log clearing or anti-forensics activity detected.",
+                evidence_refs=evidence[:3],
+            )
+        )
+
+    remote_match = REMOTE_SVC_RE.search(raw_log)
+    lateral_match = LATERAL_RE.search(raw_log)
+    if remote_match or lateral_match:
+        evidence = []
+        if remote_match:
+            evidence.append(remote_match.group(0))
+        if lateral_match:
+            evidence.append(lateral_match.group(0))
+        mappings.append(
+            AttackMapping(
+                technique_id="T1021",
+                technique_name="Remote Services",
+                confidence=0.82,
+                rationale="Remote service or lateral movement tool usage detected.",
+                evidence_refs=evidence[:3] or [raw_log[:80] or "raw_log"],
+            )
+        )
+
+    inject_match = PROC_INJECT_RE.search(raw_log)
+    if inject_match:
+        mappings.append(
+            AttackMapping(
+                technique_id="T1055",
+                technique_name="Process Injection",
+                confidence=0.88,
+                rationale="Process injection indicators detected (suspicious API calls or memory operations).",
+                evidence_refs=[inject_match.group(0)],
+            )
+        )
+
     return mappings
 
 
@@ -513,6 +627,79 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Verify MFA enforcement and authentication policy coverage for impacted identities.",
         ]
         confidence = 0.88
+    elif primary_mapping.technique_id == "T1053":
+        explain = (
+            f"Scheduled task or job creation detected, which may establish persistent access. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            "Review the scheduled task parameters, including the action/command, trigger, and run-as account.",
+            "Check for other persistence mechanisms and correlate with user account activity.",
+        ]
+        checklist = [
+            "Confirm whether the task was created by an authorized administrator or automation.",
+            "Verify the task command does not execute malicious payloads or download external content.",
+        ]
+        confidence = 0.85
+    elif primary_mapping.technique_id == "T1003":
+        explain = (
+            f"Credential dumping activity detected, targeting stored credentials or authentication material. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            "Immediately contain the affected host and begin credential rotation for all potentially exposed accounts.",
+            "Analyze process execution chain to determine scope and identify any exfiltrated credential material.",
+        ]
+        checklist = [
+            "Reset passwords for all accounts that may have been exposed on the affected host.",
+            "Check for follow-on lateral movement or privilege escalation using dumped credentials.",
+        ]
+        confidence = 0.9
+    elif primary_mapping.technique_id == "T1070":
+        explain = (
+            f"Evidence of log clearing or anti-forensics activity detected. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            "Preserve remaining forensic artifacts and initiate memory acquisition from affected hosts.",
+            "Reconstruct activity timeline using secondary log sources (network, SIEM, cloud).",
+        ]
+        checklist = [
+            "Determine which log channels were cleared and the time window of deleted events.",
+            "Investigate the account and process responsible for log deletion.",
+        ]
+        confidence = 0.9
+    elif primary_mapping.technique_id == "T1021":
+        source_hint = source_ip or "source"
+        account_hint = username or "target"
+        explain = (
+            f"Remote service or lateral movement tool usage detected. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            f"Validate whether the remote session from `{source_hint}` to `{account_hint}` is authorized.",
+            "Correlate with authentication logs and check for additional lateral movement across the environment.",
+        ]
+        checklist = [
+            "Verify the legitimacy of the remote access tool and the user account involved.",
+            "Check destination hosts for signs of compromise or unauthorized changes.",
+        ]
+        confidence = 0.82
+    elif primary_mapping.technique_id == "T1055":
+        process_hint = process or "target process"
+        explain = (
+            f"Process injection indicators detected, suggesting code was injected into a remote process. "
+            f"Evidence observed: {evidence_preview}."
+        )
+        plan = [
+            f"Isolate the host and capture memory dump of `{process_hint}` for forensic analysis.",
+            "Identify the source process performing the injection and its execution chain.",
+        ]
+        checklist = [
+            "Validate whether the injection API calls are from legitimate software (e.g., AV, DLP).",
+            "Check for injected shellcode, reflective DLL loading, or suspicious memory allocations.",
+        ]
+        confidence = 0.88
     else:
         explain = (
             f"Suspicious activity requires triage and containment validation. "
@@ -538,6 +725,11 @@ def _build_ml_fallback_mapping(raw_log: str, model: Any) -> AttackMapping:
         "T1059": "Command and Scripting Interpreter",
         "T1071": "Application Layer Protocol",
         "T1110": "Brute Force",
+        "T1053": "Scheduled Task/Job",
+        "T1003": "OS Credential Dumping",
+        "T1070": "Indicator Removal",
+        "T1021": "Remote Services",
+        "T1055": "Process Injection",
     }
     technique_name = technique_name_by_id.get(technique_id, "Model Predicted Technique")
     return AttackMapping(
@@ -691,7 +883,7 @@ def run(
         "mapping_count": len(attack_mapping),
         "mapping_source": mapping_source,
     }
-    if enrich_iocs:
+    if enrich_iocs and attack_mapping:
         audit["ioc_enrichment"] = _enrich_iocs(
             entities,
             providers=ioc_providers,

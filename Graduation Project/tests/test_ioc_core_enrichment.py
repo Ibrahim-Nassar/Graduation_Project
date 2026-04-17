@@ -13,7 +13,9 @@ from src.ioc_enrichment import (
     IOC_TYPE_UNKNOWN,
     _aggregate_score,
     _aggregate_status,
+    _classify_http_error,
     abuseipdb_lookup,
+    compute_verdict,
     detect_ioc_type,
     otx_lookup,
     threatfox_lookup,
@@ -136,12 +138,22 @@ class ProviderLookupHandlingTests(unittest.TestCase):
 
     def test_otx_http_error_sets_error_field(self) -> None:
         response = requests.Response()
-        response.status_code = 401
+        response.status_code = 500
         http_error = requests.HTTPError(response=response)
         with patch("src.ioc_enrichment._http_get_json", side_effect=http_error):
             result = otx_lookup("example.com", IOC_TYPE_DOMAIN, "k")
         self.assertEqual(result["status"], "error")
-        self.assertIn("error", result)
+        self.assertIn("http 500", result["error"])
+
+    def test_otx_auth_error_on_401(self) -> None:
+        response = requests.Response()
+        response.status_code = 401
+        http_error = requests.HTTPError(response=response)
+        with patch("src.ioc_enrichment._http_get_json", side_effect=http_error):
+            result = otx_lookup("example.com", IOC_TYPE_DOMAIN, "k")
+        self.assertEqual(result["status"], "auth_error")
+        self.assertIn("invalid or expired API key", result["error"])
+        self.assertIn("otx", result["error"])
 
     def test_threatfox_success_maps_to_malicious(self) -> None:
         payload = {
@@ -180,12 +192,22 @@ class ProviderLookupHandlingTests(unittest.TestCase):
 
     def test_threatfox_http_error_sets_error_field(self) -> None:
         response = requests.Response()
-        response.status_code = 403
+        response.status_code = 500
         http_error = requests.HTTPError(response=response)
         with patch("src.ioc_enrichment._http_post_json", side_effect=http_error):
             result = threatfox_lookup("8.8.8.8", IOC_TYPE_IP, "k")
         self.assertEqual(result["status"], "error")
-        self.assertIn("error", result)
+        self.assertIn("http 500", result["error"])
+
+    def test_threatfox_auth_error_on_403(self) -> None:
+        response = requests.Response()
+        response.status_code = 403
+        http_error = requests.HTTPError(response=response)
+        with patch("src.ioc_enrichment._http_post_json", side_effect=http_error):
+            result = threatfox_lookup("8.8.8.8", IOC_TYPE_IP, "k")
+        self.assertEqual(result["status"], "auth_error")
+        self.assertIn("invalid or expired API key", result["error"])
+        self.assertIn("threatfox", result["error"])
 
 
 class AggregationLogicTests(unittest.TestCase):
@@ -240,6 +262,174 @@ class AggregationLogicTests(unittest.TestCase):
     def test_aggregate_score_error_is_handled(self) -> None:
         score = _aggregate_score({"virustotal": {"status": "error"}})
         self.assertEqual(score, 0)
+
+
+class VerdictComputationTests(unittest.TestCase):
+    def test_all_malicious_returns_malicious_with_high_confidence(self) -> None:
+        results = {
+            "virustotal": {"status": "malicious"},
+            "otx": {"status": "malicious"},
+            "threatfox": {"status": "malicious"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Malicious")
+        self.assertGreaterEqual(verdict["confidence"], 80)
+        self.assertIn("malicious", verdict["reasoning"].lower())
+
+    def test_all_clean_returns_clean(self) -> None:
+        results = {
+            "virustotal": {"status": "clean"},
+            "otx": {"status": "clean"},
+            "abuseipdb": {"status": "clean"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Clean")
+        self.assertGreaterEqual(verdict["confidence"], 50)
+
+    def test_mixed_suspicious_returns_suspicious(self) -> None:
+        results = {
+            "virustotal": {"status": "clean"},
+            "otx": {"status": "suspicious"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Suspicious")
+
+    def test_single_malicious_overrides_clean(self) -> None:
+        results = {
+            "virustotal": {"status": "malicious"},
+            "otx": {"status": "clean"},
+            "threatfox": {"status": "clean"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Malicious")
+
+    def test_empty_results_returns_unknown(self) -> None:
+        verdict = compute_verdict({})
+        self.assertEqual(verdict["verdict"], "Unknown")
+        self.assertEqual(verdict["confidence"], 0)
+
+    def test_all_error_returns_unknown(self) -> None:
+        results = {
+            "virustotal": {"status": "error"},
+            "otx": {"status": "n/a"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Unknown")
+
+    def test_verdict_keys_present(self) -> None:
+        verdict = compute_verdict({"virustotal": {"status": "clean"}})
+        self.assertIn("verdict", verdict)
+        self.assertIn("confidence", verdict)
+        self.assertIn("reasoning", verdict)
+
+    def test_all_auth_error_returns_unknown(self) -> None:
+        results = {
+            "virustotal": {"status": "auth_error"},
+            "otx": {"status": "auth_error"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Unknown")
+        self.assertEqual(verdict["confidence"], 0)
+
+    def test_auth_error_mixed_with_clean_returns_clean(self) -> None:
+        results = {
+            "virustotal": {"status": "auth_error"},
+            "otx": {"status": "clean"},
+        }
+        verdict = compute_verdict(results)
+        self.assertEqual(verdict["verdict"], "Clean")
+
+
+class AuthErrorClassificationTests(unittest.TestCase):
+    def test_401_classified_as_auth_error(self) -> None:
+        response = requests.Response()
+        response.status_code = 401
+        exc = requests.HTTPError(response=response)
+        result = _classify_http_error(exc, "virustotal")
+        self.assertEqual(result["status"], "auth_error")
+        self.assertIn("invalid or expired API key", result["error"])
+        self.assertIn("virustotal", result["error"])
+        self.assertIn("401", result["error"])
+
+    def test_403_classified_as_auth_error(self) -> None:
+        response = requests.Response()
+        response.status_code = 403
+        exc = requests.HTTPError(response=response)
+        result = _classify_http_error(exc, "abuseipdb")
+        self.assertEqual(result["status"], "auth_error")
+        self.assertIn("invalid or expired API key", result["error"])
+        self.assertIn("abuseipdb", result["error"])
+        self.assertIn("403", result["error"])
+
+    def test_429_classified_as_generic_error(self) -> None:
+        response = requests.Response()
+        response.status_code = 429
+        exc = requests.HTTPError(response=response)
+        result = _classify_http_error(exc, "otx")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "http 429")
+
+    def test_500_classified_as_generic_error(self) -> None:
+        response = requests.Response()
+        response.status_code = 500
+        exc = requests.HTTPError(response=response)
+        result = _classify_http_error(exc, "threatfox")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "http 500")
+
+    def test_no_response_object_classified_as_generic_error(self) -> None:
+        exc = requests.HTTPError(response=None)
+        result = _classify_http_error(exc, "virustotal")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "http_error")
+
+    def test_vt_401_returns_auth_error(self) -> None:
+        response = requests.Response()
+        response.status_code = 401
+        http_error = requests.HTTPError(response=response)
+        with patch("src.ioc_enrichment._http_get_json", side_effect=http_error):
+            result = vt_lookup("8.8.8.8", IOC_TYPE_IP, "bad_key")
+        self.assertEqual(result["status"], "auth_error")
+        self.assertIn("invalid or expired API key", result["error"])
+
+    def test_abuseipdb_403_returns_auth_error(self) -> None:
+        response = requests.Response()
+        response.status_code = 403
+        http_error = requests.HTTPError(response=response)
+        with patch("src.ioc_enrichment._http_get_json", side_effect=http_error):
+            result = abuseipdb_lookup("8.8.8.8", "bad_key")
+        self.assertEqual(result["status"], "auth_error")
+        self.assertIn("invalid or expired API key", result["error"])
+
+
+class AggregateStatusAuthErrorTests(unittest.TestCase):
+    def test_all_auth_error_returns_auth_error(self) -> None:
+        result = _aggregate_status({
+            "virustotal": {"status": "auth_error"},
+            "otx": {"status": "auth_error"},
+        })
+        self.assertEqual(result, "auth_error")
+
+    def test_auth_error_mixed_with_clean_returns_clean(self) -> None:
+        result = _aggregate_status({
+            "virustotal": {"status": "auth_error"},
+            "otx": {"status": "clean"},
+        })
+        self.assertEqual(result, "clean")
+
+    def test_auth_error_mixed_with_na_returns_unknown(self) -> None:
+        result = _aggregate_status({
+            "virustotal": {"status": "auth_error"},
+            "otx": {"status": "n/a"},
+        })
+        self.assertEqual(result, "unknown")
+
+    def test_auth_error_mixed_with_malicious_returns_malicious(self) -> None:
+        result = _aggregate_status({
+            "virustotal": {"status": "auth_error"},
+            "otx": {"status": "malicious"},
+        })
+        self.assertEqual(result, "malicious")
 
 
 if __name__ == "__main__":

@@ -10,12 +10,35 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.model import load_model
-from src.pipeline import run
+from src.pipeline import NoMappingError, run
 import src.pipeline as pipeline_module
 
 PROVIDER_ORDER = ("virustotal", "abuseipdb", "otx", "threatfox")
 SUPPORTED_MANUAL_TYPES = {"ip", "domain", "url", "hash"}
 _SETTINGS_FILE = Path.home() / ".soc_workstation_settings.json"
+
+# Default location of the trained ML fallback classifier artifact.
+# The app will transparently load this when no explicit ``model_path`` is
+# provided to ``analyze_soc_log``. Missing / unreadable artifacts are
+# tolerated — the pipeline simply continues without an ML fallback.
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "artifacts" / "attack_classifier.pkl"
+
+
+def _resolve_fallback_model(model_path: str) -> Any | None:
+    """Load the ML fallback classifier, degrading safely on any failure.
+
+    If ``model_path`` is empty the default bundled artifact is attempted.
+    Any load error (missing file, unpickle error, incompatible object) is
+    swallowed so the rule-based pipeline keeps running without ML fallback.
+    """
+    explicit = model_path.strip()
+    candidate = Path(explicit) if explicit else DEFAULT_MODEL_PATH
+    if not candidate.exists():
+        return None
+    try:
+        return load_model(candidate)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -59,6 +82,22 @@ def load_persisted_settings() -> SessionSettings:
     return settings
 
 
+def invalidate_ioc_cache() -> None:
+    """Drop any cached IOC scan results.
+
+    Called whenever provider settings or API keys change — otherwise the
+    app would happily serve stale results after the user fixed a bad key
+    or toggled a provider, which undermines trust in the re-scan.
+    """
+    module = _load_ioc_module()
+    if module is not None and hasattr(module, "clear_scan_cache"):
+        try:
+            module.clear_scan_cache()
+        except Exception:
+            # Cache-clear must never break a settings save.
+            pass
+
+
 def save_persisted_settings(settings: SessionSettings) -> bool:
     payload = {
         "api_keys": {
@@ -76,9 +115,14 @@ def save_persisted_settings(settings: SessionSettings) -> bool:
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
-        return True
     except OSError:
+        # Even when we fail to *persist* the change, the in-memory settings
+        # have already been updated by the caller, so the cache must still
+        # be invalidated to avoid serving stale verdicts this session.
+        invalidate_ioc_cache()
         return False
+    invalidate_ioc_cache()
+    return True
 
 
 def _unique_values(items: list[str]) -> list[str]:
@@ -370,7 +414,7 @@ def analyze_soc_log(
         return {"ok": False, "error": "No log content provided."}
 
     try:
-        model = load_model(model_path.strip()) if model_path.strip() else None
+        model = _resolve_fallback_model(model_path)
         result = run(
             value,
             model=model,
@@ -400,39 +444,32 @@ def analyze_soc_log(
         )
         out["correlation_insights"] = correlation_store.get_all_insights(entity_values, top_mapping["technique_id"])
         return out
-    except ValidationError as exc:
-        partial_result: dict[str, Any] = {}
-        try:
-            event = pipeline_module._normalize_event(value)
-            entities = pipeline_module._extract_entities(event.raw_event, event.normalized_event)
-            audit: dict[str, Any] = {
-                "mapping_source": "none",
-                "normalized_event": event.normalized_event,
-                "entity_count": len(entities),
-                "mapping_count": 0,
-            }
-            if enrich_iocs:
-                audit["ioc_enrichment"] = pipeline_module._enrich_iocs(
-                    entities,
-                    providers=ioc_providers,
-                    api_keys=ioc_api_keys,
-                )
-            partial_result = {
-                "entities": [entity.model_dump(mode="json") for entity in entities],
-                "attack_mapping": [],
-                "epc": {},
-                "audit": audit,
-            }
-        except Exception:
-            partial_result = {}
+    except NoMappingError as exc:
+        # Genuine, expected "no ATT&CK rule matched" path.  We *only* get
+        # here when the pipeline explicitly decided there was no mapping —
+        # a real ``ValidationError`` (schema/correctness bug) is NOT
+        # swallowed here and falls through to the ``Exception`` handler
+        # below as a real failure.
+        audit: dict[str, Any] = {
+            "mapping_source": "none",
+            "normalized_event": dict(exc.normalized_event),
+            "entity_count": len(exc.entities),
+            "mapping_count": 0,
+        }
+        if exc.ioc_enrichment is not None:
+            audit["ioc_enrichment"] = list(exc.ioc_enrichment)
+        partial_result: dict[str, Any] = {
+            "entities": [entity.model_dump(mode="json") for entity in exc.entities],
+            "attack_mapping": [],
+            "epc": {},
+            "audit": audit,
+        }
         summary = {
             "technique_id": "N/A",
             "technique_name": "Not mapped",
             "confidence": 0.0,
             "mapping_source": "none",
-            "entity_count": int(partial_result.get("audit", {}).get("entity_count", 0) or 0)
-            if isinstance(partial_result, dict)
-            else 0,
+            "entity_count": len(exc.entities),
         }
         out: dict[str, Any] = {
             "ok": False,
@@ -441,22 +478,33 @@ def analyze_soc_log(
             "error": "No ATT&CK mapping could be produced for this log.",
             "reason": "no_mapping",
             "partial_result": partial_result,
-            "details": exc.errors(),
         }
         out["analyst_brief"] = generate_analyst_brief(out)
         out["investigation_summary"] = generate_investigation_summary(out)
 
         entity_values = [
             str(e.get("value", ""))
-            for e in (partial_result.get("entities", []) if isinstance(partial_result, dict) else [])
+            for e in partial_result.get("entities", [])
             if e.get("type") in {"ipv4", "domain"}
         ]
         for ev in entity_values:
             correlation_store.record_ioc(ev, "seen", "soc_analysis")
         out["correlation_insights"] = correlation_store.get_ioc_insights(entity_values)
         return out
+    except ValidationError as exc:
+        # A real schema / correctness failure inside the pipeline — e.g.
+        # a rule produced a malformed AttackMapping, an entity has bogus
+        # offsets, etc.  This is *not* the same thing as "no mapping"; we
+        # must surface it honestly so bugs are visible instead of being
+        # shown to the analyst as a benign unmapped result.
+        return {
+            "ok": False,
+            "error": "Internal validation error — the analyzer produced an invalid result.",
+            "reason": "validation_error",
+            "details": exc.errors(),
+        }
     except Exception as exc:  # pragma: no cover - UI safety net
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), "reason": "internal_error"}
 
 
 def load_soc_log_inputs(raw_text: str, file_path: str | None) -> str:
@@ -611,36 +659,25 @@ def generate_analyst_brief(payload: dict[str, Any]) -> str:
         return " ".join(parts)
 
     primary = mappings[0]
-    rationale = str(primary.get("rationale", "")).strip()
-    evidence_refs = primary.get("evidence_refs", []) if isinstance(primary.get("evidence_refs"), list) else []
-    evidence_summary = ", ".join(str(e) for e in evidence_refs[:3]) if evidence_refs else ""
 
-    parts: list[str] = []
-    if entity_mention:
-        parts.append(f"Log analysis identified activity involving {entity_mention}.")
-    else:
-        parts.append("Log analysis identified suspicious activity.")
-
-    source_qualifier = ""
+    # The analyst brief is intentionally a single short line: the full
+    # mapping row (technique + name + source + confidence) is already
+    # visible in the MITRE table and the top strip, so repeating it all
+    # here just produces a wall of text.  We only surface the prediction
+    # source + the technique label + the confidence; any further rationale
+    # lives on the mapping row itself (evidence_refs / rationale field)
+    # where the analyst can inspect it on demand.
     if mapping_source == "ml_fallback":
-        source_qualifier = " (ML fallback \u2014 analyst review required)"
-    elif confidence < 0.6:
-        source_qualifier = " (low confidence \u2014 verify before action)"
-    parts.append(
-        f"Mapped to {technique_id} ({technique_name})"
-        f" at {confidence:.0%} confidence{source_qualifier}."
+        prefix = "ML prediction"
+    elif mapping_source == "rule":
+        prefix = "Rule match"
+    else:
+        prefix = "Mapping"
+
+    return (
+        f"{prefix}: {technique_id} \u2014 {technique_name} "
+        f"({confidence:.0%} confidence)."
     )
-
-    if rationale:
-        parts.append(f"Primary evidence: {rationale}")
-    elif evidence_summary:
-        parts.append(f"Key signals: {evidence_summary}.")
-
-    plan = epc.get("plan", []) if isinstance(epc.get("plan"), list) else []
-    if plan and str(plan[0]).strip():
-        parts.append(f"Recommended first action: {plan[0]}")
-
-    return " ".join(parts)
 
 
 def sanitize_api_keys(api_keys: dict[str, str]) -> dict[str, str]:

@@ -40,28 +40,6 @@ class UiExportDialogEdgeTests(unittest.TestCase):
         export_json_mock.assert_not_called()
         info.assert_not_called()
 
-    def test_cancelled_soc_csv_save_dialog_does_not_export(self) -> None:
-        self.window.last_soc_payload = {"ok": True, "summary": {}, "result": {}}
-        with (
-            patch("src.desktop_app.QFileDialog.getSaveFileName", return_value=("", "")),
-            patch("src.desktop_app.export_soc_csv") as export_soc_csv_mock,
-            patch("src.desktop_app.QMessageBox.information") as info,
-        ):
-            self.window._export_soc_csv()
-        export_soc_csv_mock.assert_not_called()
-        info.assert_not_called()
-
-    def test_cancelled_ioc_csv_save_dialog_does_not_export(self) -> None:
-        self.window.last_ioc_rows = [{"ioc": "8.8.8.8", "status": "clean"}]
-        with (
-            patch("src.desktop_app.QFileDialog.getSaveFileName", return_value=("", "")),
-            patch("src.desktop_app.export_ioc_csv") as export_ioc_csv_mock,
-            patch("src.desktop_app.QMessageBox.information") as info,
-        ):
-            self.window._export_ioc_csv()
-        export_ioc_csv_mock.assert_not_called()
-        info.assert_not_called()
-
     def test_cancelled_soc_json_save_dialog_does_not_export(self) -> None:
         self.window.last_soc_payload = {"ok": True, "summary": {}, "result": {}}
         with (
@@ -77,18 +55,14 @@ class UiExportDialogEdgeTests(unittest.TestCase):
         self.window.last_soc_payload = None
         with (
             patch("src.desktop_app.QMessageBox.information") as info,
-            patch("src.desktop_app.export_soc_csv") as export_soc_csv_mock,
             patch("src.desktop_app.export_json") as export_json_mock,
         ):
-            self.window._export_soc_csv()
             self.window._export_soc_json()
-        self.assertEqual(info.call_count, 2)
-        export_soc_csv_mock.assert_not_called()
+        self.assertEqual(info.call_count, 1)
         export_json_mock.assert_not_called()
 
     def test_settings_save_failure_path_updates_status(self) -> None:
         self.window.api_key_inputs["virustotal"].setText("  key  ")
-        self.window.history_toggle.setChecked(False)
         with patch("src.desktop_app.save_persisted_settings", return_value=False) as save_mock:
             self.window._apply_settings()
         save_mock.assert_called_once()

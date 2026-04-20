@@ -53,26 +53,26 @@ class DesktopBackgroundTaskTests(unittest.TestCase):
         with patch("src.desktop_app.analyze_soc_log", return_value=expected_payload) as mocked:
             payload = _analyze_soc_background(
                 selected_log="raw-log",
-                enrich_iocs=True,
-                ioc_providers={"virustotal": False},
-                ioc_api_keys={"virustotal": "abc"},
                 progress=progress_messages.append,
             )
 
-        mocked.assert_called_once_with(
-            "raw-log",
-            enrich_iocs=True,
-            ioc_providers={"virustotal": False},
-            ioc_api_keys={"virustotal": "abc"},
-        )
-        self.assertEqual(progress_messages, ["Analyzing log with enrichment..."])
+        # SOC Analysis does not thread IOC provider settings down — IOC
+        # enrichment lives on the dedicated IOC Scanner page.  Verify the
+        # call contract is the minimal one and no dead arguments slip back.
+        mocked.assert_called_once_with("raw-log")
+        self.assertEqual(progress_messages, ["Analyzing log..."])
         self.assertEqual(payload, expected_payload)
 
     def test_status_tone_uses_expected_color_semantics(self) -> None:
-        self.assertEqual(_status_tone("clean"), ("CLEAN", "#22C55E"))
-        self.assertEqual(_status_tone("suspicious"), ("SUSPICIOUS", "#F59E0B"))
-        self.assertEqual(_status_tone("malicious"), ("MALICIOUS", "#EF4444"))
-        self.assertEqual(_status_tone("unknown"), ("UNKNOWN", "#9CA3AF"))
+        # Semantic colours are pulled from the palette tokens so the test
+        # stays in sync with the shared design system. The specific hexes
+        # are part of the design, not the contract.
+        from src.desktop_app import _ACCENT, _DANGER, _TEXT2, _WARNING
+
+        self.assertEqual(_status_tone("clean"), ("CLEAN", _ACCENT))
+        self.assertEqual(_status_tone("suspicious"), ("SUSPICIOUS", _WARNING))
+        self.assertEqual(_status_tone("malicious"), ("MALICIOUS", _DANGER))
+        self.assertEqual(_status_tone("unknown"), ("UNKNOWN", _TEXT2))
         self.assertEqual(_status_tone("auth_error"), ("BAD API KEY", "#F97316"))
 
     def test_provider_summary_formatting_is_readable(self) -> None:

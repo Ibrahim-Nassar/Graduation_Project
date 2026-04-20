@@ -480,6 +480,14 @@ class AppEntrySmokeTests(unittest.TestCase):
         class FakeApp:
             def __init__(self, _args: list[Any]) -> None:
                 self.exec_called = 0
+                self.style_requests: list[str] = []
+                self.palette_set = 0
+
+            def setStyle(self, name: str) -> None:  # noqa: N802 - Qt API
+                self.style_requests.append(name)
+
+            def setPalette(self, _palette: Any) -> None:  # noqa: N802 - Qt API
+                self.palette_set += 1
 
             def exec(self) -> int:
                 self.exec_called += 1

@@ -173,10 +173,32 @@ def compute_verdict(provider_results: dict[str, dict[str, Any]]) -> dict[str, An
         agreement = 0.0
         reasons = ["Insufficient data for a determination"]
 
-    responding = len(status_buckets["malicious"]) + len(status_buckets["suspicious"]) + len(status_buckets["clean"])
-    coverage_factor = min(responding / 3.0, 1.0)
-    confidence = int(round(agreement * coverage_factor * 100))
+    # Confidence reflects *our belief in the verdict*, not the population
+    # coverage.  A strong result from one credible provider should not look
+    # artificially weak just because the other providers stayed silent
+    # (no key, no match, rate-limited, etc.).  We therefore base confidence
+    # on the agreement ratio among *responding* providers and only apply a
+    # mild dampener when exactly one provider weighed in, to honour the
+    # "corroboration is nice" signal without manufacturing distrust.
+    responding = (
+        len(status_buckets["malicious"])
+        + len(status_buckets["suspicious"])
+        + len(status_buckets["clean"])
+    )
+    # Single-provider verdicts get a small haircut; two or more responding
+    # providers get no haircut at all.  Empirically this keeps a credible
+    # single "Malicious" hit at ~85% rather than dropping it to ~33%.
+    single_source_dampener = 0.85 if responding == 1 else 1.0
+    confidence = int(round(agreement * single_source_dampener * 100))
     confidence = max(0, min(100, confidence))
+
+    # Final sanity gate: never display a decisive verdict with a confidence
+    # that looks untrustworthy next to it.  If agreement is genuinely low
+    # (mixed signals across responding providers) the verdict itself should
+    # already be Suspicious / Unknown, so we only floor it here to avoid
+    # the pathological "Malicious @ 20%" row the UI used to produce.
+    if verdict in {_VERDICT_MALICIOUS, _VERDICT_SUSPICIOUS, _VERDICT_CLEAN}:
+        confidence = max(confidence, 50)
 
     reasoning = "; ".join(reasons[:3]) + "." if reasons else "No determination."
 
@@ -283,9 +305,13 @@ def abuseipdb_lookup(ioc: str, api_key: str | None) -> dict[str, Any]:
     data = payload.get("data", {})
     confidence = int(data.get("abuseConfidenceScore", 0) or 0)
     reports = int(data.get("totalReports", 0) or 0)
+    # AbuseIPDB's abuseConfidenceScore is a *community noise* signal: public
+    # IPs routinely pick up a handful of low-effort reports without being
+    # malicious.  Keep "malicious" at the original 75 but raise "suspicious"
+    # to 40 (with >=2 reports) so benign public IPs aren't easily flagged.
     if confidence >= 75:
         return {"status": "malicious", "score": confidence, "details": {"confidence": confidence, "reports": reports}}
-    if confidence >= 25:
+    if confidence >= 40 and reports >= 2:
         return {"status": "suspicious", "score": confidence, "details": {"confidence": confidence, "reports": reports}}
     return {"status": "clean", "score": confidence, "details": {"confidence": confidence, "reports": reports}}
 

@@ -94,20 +94,35 @@ class _BaseUiGlueTest(unittest.TestCase):
 class MainWindowTabSmokeTests(_BaseUiGlueTest):
     def test_window_instantiates_and_core_pages_exist(self) -> None:
         self.assertIsNotNone(self.window)
-        self.assertGreaterEqual(self.window._stack.count(), 4)
-        self.assertEqual(self.window.tab_index_home, 0)
+        self.assertEqual(self.window._stack.count(), 3)
+        self.assertEqual(self.window.tab_index_soc, 0)
         self.assertEqual(self.window.tab_index_ioc, 1)
-        self.assertEqual(self.window.tab_index_soc, 2)
-        self.assertEqual(self.window.tab_index_settings, 3)
+        self.assertEqual(self.window.tab_index_settings, 2)
+        self.assertFalse(hasattr(self.window, "tab_index_home"))
+        self.assertFalse(hasattr(self.window, "tab_index_corpus"))
+        self.assertFalse(hasattr(self.window, "tab_index_history"))
         self.assertIsNotNone(self.window.ioc_table)
         self.assertIsNotNone(self.window.soc_entities_table)
         self.assertIsNotNone(self.window.provider_checkboxes)
 
-    def test_no_cases_page_exists(self) -> None:
+    def test_soc_is_default_page(self) -> None:
+        self.assertEqual(self.window._stack.currentIndex(), self.window.tab_index_soc)
+
+    def test_no_dashboard_or_history_exists(self) -> None:
+        self.assertFalse(hasattr(self.window, "home_ioc_metric"))
+        self.assertFalse(hasattr(self.window, "history_list"))
         self.assertFalse(hasattr(self.window, "tab_index_cases"))
 
     def test_soc_page_does_not_expose_model_path_input(self) -> None:
         self.assertFalse(hasattr(self.window, "soc_model_path_input"))
+
+    def test_ioc_page_has_no_csv_export(self) -> None:
+        self.assertFalse(hasattr(self.window, "ioc_export_csv_btn"))
+
+    def test_soc_page_has_no_epc_or_enrichment_sections(self) -> None:
+        self.assertFalse(hasattr(self.window, "soc_section_epc"))
+        self.assertFalse(hasattr(self.window, "soc_section_enrichment"))
+        self.assertFalse(hasattr(self.window, "soc_section_investigation"))
 
 
 class IocRunHandlerTests(_BaseUiGlueTest):
@@ -168,6 +183,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "effective_type": "ip",
                 "status": "clean",
                 "score": 10,
+                "verdict": "Clean",
+                "verdict_confidence": 90,
+                "verdict_reasoning": "no threats",
                 "virustotal": "clean",
                 "abuseipdb": "clean",
                 "otx": "clean",
@@ -183,6 +201,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "effective_type": "domain",
                 "status": "suspicious",
                 "score": 65,
+                "verdict": "Suspicious",
+                "verdict_confidence": 70,
+                "verdict_reasoning": "flagged by multiple providers",
                 "virustotal": "suspicious",
                 "abuseipdb": "not_supported",
                 "otx": "suspicious",
@@ -197,10 +218,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
         self.assertEqual(self.window.ioc_table.rowCount(), 2)
         self.assertIn("Total: 2", self.window.ioc_summary_label.text())
         self.assertIn("Malicious: 0", self.window.ioc_summary_label.text())
-        summary_text = self.window.ioc_table.item(1, 11).text()
+        # Column 5 is now Provider Summary
+        summary_text = self.window.ioc_table.item(1, 5).text()
         self.assertIn("virustotal:suspicious", summary_text)
-        self.assertIn("abuseipdb:not_supported", summary_text)
-        self.assertEqual(self.window.ioc_table.item(1, 12).text(), "1")
         self.window.ioc_table.selectRow(1)
         self.window._update_ioc_detail_panel()
         self.assertIn("IOC: evil.example.com", self.window.ioc_detail_text.toPlainText())
@@ -214,6 +234,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "effective_type": "ip",
                 "status": "clean",
                 "score": 10,
+                "verdict": "Clean",
+                "verdict_confidence": 85,
+                "verdict_reasoning": "",
                 "virustotal": "clean",
                 "abuseipdb": "clean",
                 "otx": "clean",
@@ -231,6 +254,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "effective_type": "domain",
                 "status": "suspicious",
                 "score": 65,
+                "verdict": "Suspicious",
+                "verdict_confidence": 70,
+                "verdict_reasoning": "",
                 "virustotal": "suspicious",
                 "abuseipdb": "not_supported",
                 "otx": "suspicious",
@@ -273,6 +299,7 @@ class SocRunHandlerTests(_BaseUiGlueTest):
         loader.assert_called_once()
         self.assertEqual(_FakeWorker.instances[0].task_kwargs["selected_log"], "failed login failed login failed login")
         self.assertNotIn("model_path", _FakeWorker.instances[0].task_kwargs)
+        self.assertNotIn("enrich_iocs", _FakeWorker.instances[0].task_kwargs)
         self.assertTrue(_FakeThread.instances[0].started_called)
 
     def test_file_path_starts_analysis(self) -> None:
@@ -288,16 +315,6 @@ class SocRunHandlerTests(_BaseUiGlueTest):
         self.assertEqual(loader.call_args.args[1], "C:/tmp/log.txt")
         self.assertEqual(_FakeWorker.instances[0].task_kwargs["selected_log"], "failed login failed login failed login")
 
-    def test_enrich_toggle_changes_worker_args(self) -> None:
-        self.window.soc_enrich_toggle.setChecked(True)
-        with (
-            patch("src.desktop_app.load_soc_log_inputs", return_value="failed login failed login failed login"),
-            patch("src.desktop_app.QThread", _FakeThread),
-            patch("src.desktop_app._BackgroundTaskWorker", _FakeWorker),
-        ):
-            self.window._run_soc_analysis()
-        self.assertTrue(_FakeWorker.instances[0].task_kwargs["enrich_iocs"])
-
 
 class SocFinishHandlerTests(_BaseUiGlueTest):
     def test_finish_handler_populates_soc_sections(self) -> None:
@@ -309,11 +326,12 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
                 "confidence": 0.88,
                 "mapping_source": "rule",
                 "entity_count": 2,
+                "family": "Windows",
             },
             "result": {
                 "entities": [
-                    {"type": "ipv4", "value": "8.8.8.8", "evidence_ref": "8.8.8.8", "start": 1, "end": 8},
-                    {"type": "domain", "value": "evil.example.com", "evidence_ref": "evil.example.com", "start": 10, "end": 26},
+                    {"type": "ipv4", "value": "8.8.8.8", "evidence_ref": "8.8.8.8"},
+                    {"type": "domain", "value": "evil.example.com", "evidence_ref": "evil.example.com"},
                 ],
                 "attack_mapping": [
                     {
@@ -324,38 +342,18 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
                         "evidence_refs": ["failed login"],
                     }
                 ],
-                "epc": {
-                    "explain": "Explain text",
-                    "plan": ["Step one", "Step two"],
-                    "checklist": ["Item one", "Item two"],
-                    "confidence": 0.88,
-                    "citations": ["failed login"],
-                },
-                "audit": {
-                    "mapping_source": "rule",
-                    "ioc_enrichment": [
-                        {
-                            "ioc": "8.8.8.8",
-                            "type": "ip",
-                            "status": "clean",
-                            "score": 10,
-                            "providers": {},
-                        }
-                    ],
-                },
+                "audit": {"mapping_source": "rule"},
             },
         }
-        self.window.soc_enrich_toggle.setChecked(True)
         self.window._on_soc_analysis_finished(payload)
         self.assertEqual(self.window.soc_entities_table.rowCount(), 2)
         self.assertEqual(self.window.soc_mitre_table.rowCount(), 1)
-        self.assertIn("Explain:", self.window.soc_epc_text.toPlainText())
-        self.assertEqual(self.window.soc_enrichment_table.rowCount(), 1)
-        self.assertIn("Mapped T1110 (Brute Force)", self.window.soc_summary_label.text())
-        self.assertEqual(self.window.soc_top_source.text(), "Mapping Source: rule")
-        self.assertIn("Used (1 IOCs)", self.window.soc_top_enrichment.text())
+        self.assertIn("T1110", self.window.soc_top_technique.text())
+        self.assertIn("Brute Force", self.window.soc_top_technique.text())
+        self.assertIn("88%", self.window.soc_top_confidence.text())
+        self.assertIn("Windows", self.window.soc_top_family.text())
 
-    def test_low_confidence_mapping_shows_cautionary_summary(self) -> None:
+    def test_low_confidence_mapping_shows_cautionary_label(self) -> None:
         payload = {
             "ok": True,
             "summary": {
@@ -376,21 +374,95 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
                         "evidence_refs": ["authentication failed"],
                     }
                 ],
-                "epc": {
-                    "explain": "Low-confidence mapping text",
-                    "plan": ["Step one"],
-                    "checklist": ["Item one", "Item two"],
-                    "confidence": 0.41,
-                    "citations": ["authentication failed"],
-                },
                 "audit": {"mapping_source": "rule"},
             },
         }
-        self.window.soc_enrich_toggle.setChecked(False)
         self.window._on_soc_analysis_finished(payload)
         self.assertIn("low confidence", self.window.soc_summary_label.text().lower())
-        self.assertIn("(low)", self.window.soc_top_confidence.text())
-        self.assertIn("Not requested", self.window.soc_top_enrichment.text())
+        # The "(low)" suffix was removed from the confidence strip value:
+        # a "LOW" severity pill on the left already communicates the risk
+        # tier, and duplicating the cue in the confidence column caused
+        # analysts to read the UI as having two unrelated "low" badges.
+        # The severity pill is now the single source of risk truth.
+        self.assertEqual(
+            self.window.soc_top_confidence.text().strip(),
+            "Confidence: 41%",
+        )
+        # The severity pill itself carries the "low" cue.  Tests run
+        # without showing the widget so we can't rely on isVisible();
+        # check the rendered badge text and the CSS class that drives
+        # its colouring instead.
+        self.assertEqual(self.window.soc_severity_label.text(), "LOW")
+        self.assertEqual(
+            self.window.soc_severity_label.property("class"),
+            "severityLow",
+        )
+
+    def test_ml_fallback_mapping_is_labelled_in_mitre_table(self) -> None:
+        # Regression guard: when the pipeline produced an ML-fallback
+        # mapping (no deterministic rule matched), the MITRE table must
+        # make that visible so analysts don't mistake it for a rule match.
+        payload = {
+            "ok": True,
+            "summary": {
+                "technique_id": "T1047",
+                "technique_name": "Windows Management Instrumentation",
+                "confidence": 0.45,
+                "mapping_source": "ml_fallback",
+                "entity_count": 1,
+            },
+            "result": {
+                "entities": [
+                    {"type": "process", "value": "powershell.exe", "evidence_ref": "powershell.exe"},
+                ],
+                "attack_mapping": [
+                    {
+                        "technique_id": "T1047",
+                        "technique_name": "Windows Management Instrumentation",
+                        "confidence": 0.45,
+                        "rationale": (
+                            "ML fallback prediction - no deterministic ATT&CK "
+                            "rule matched. Key terms the model keyed on: "
+                            "'wmic', 'wmi', 'win32_process'."
+                        ),
+                        "evidence_refs": [
+                            "ml_prediction",
+                            "key_terms:wmic, wmi, win32_process",
+                        ],
+                    }
+                ],
+                "audit": {"mapping_source": "ml_fallback"},
+            },
+        }
+        self.window._on_soc_analysis_finished(payload)
+
+        table = self.window.soc_mitre_table
+        self.assertEqual(table.rowCount(), 1)
+
+        header_labels = [
+            table.horizontalHeaderItem(i).text().lower()
+            for i in range(table.columnCount())
+        ]
+        self.assertIn("source", header_labels)
+        source_col = header_labels.index("source")
+
+        source_cell = table.item(0, source_col)
+        self.assertIsNotNone(source_cell)
+        self.assertIn("ml", source_cell.text().lower())
+
+        self.assertIn("T1047", self.window.soc_top_technique.text())
+        self.assertIn("ml fallback", self.window.soc_summary_label.text().lower())
+
+        brief = self.window.soc_analyst_brief_label.text()
+        # The compact brief prefixes ML-sourced mappings with
+        # "ML prediction:" so the analyst sees the provenance on the
+        # first line without having to parse a full paragraph.  The
+        # longer "ML fallback" phrasing still appears in the summary
+        # banner and the MITRE table source column.
+        self.assertTrue(
+            brief.startswith("ML prediction:"),
+            f"expected ML-source prefix on brief, got: {brief!r}",
+        )
 
     def test_no_mapping_with_partial_extraction_is_explained(self) -> None:
         payload = {
@@ -408,49 +480,9 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
             },
         }
         self.window._on_soc_analysis_finished(payload)
-        self.assertIn("no att&ck mapping was produced", self.window.soc_summary_label.text().lower())
-        self.assertIn("extraction still succeeded", self.window.soc_summary_label.text().lower())
+        self.assertIn("no att&ck mapping", self.window.soc_summary_label.text().lower())
         self.assertEqual(self.window.soc_entities_table.rowCount(), 2)
         self.assertEqual(self.window.soc_mitre_table.rowCount(), 0)
-        self.assertIn("unavailable because no ATT&CK mapping was produced", self.window.soc_epc_text.toPlainText())
-        self.assertEqual(self.window.soc_top_source.text(), "Mapping Source: none")
-        self.assertEqual(self.window.home_soc_metric.text(), "1")
-        self.assertIn("Technique: N/A (Not mapped)", self.window.home_soc_summary.text())
-
-    def test_enrichment_enabled_without_rows_is_called_out(self) -> None:
-        payload = {
-            "ok": True,
-            "summary": {
-                "technique_id": "T1059",
-                "technique_name": "Command and Scripting Interpreter",
-                "confidence": 0.9,
-                "mapping_source": "rule",
-                "entity_count": 1,
-            },
-            "result": {
-                "entities": [{"type": "process", "value": "powershell.exe", "evidence_ref": "powershell"}],
-                "attack_mapping": [
-                    {
-                        "technique_id": "T1059",
-                        "technique_name": "Command and Scripting Interpreter",
-                        "confidence": 0.9,
-                        "rationale": "PowerShell encoded execution",
-                        "evidence_refs": ["powershell", "-enc"],
-                    }
-                ],
-                "epc": {
-                    "explain": "Explain text",
-                    "plan": ["Step one"],
-                    "checklist": ["Item one", "Item two"],
-                    "confidence": 0.9,
-                    "citations": ["powershell"],
-                },
-                "audit": {"mapping_source": "rule", "ioc_enrichment": []},
-            },
-        }
-        self.window.soc_enrich_toggle.setChecked(True)
-        self.window._on_soc_analysis_finished(payload)
-        self.assertIn("Enabled, but no IOC enrichment data was produced", self.window.soc_top_enrichment.text())
 
 
 class AnalystBriefUiTests(_BaseUiGlueTest):
@@ -485,13 +517,6 @@ class AnalystBriefUiTests(_BaseUiGlueTest):
                         "evidence_refs": ["powershell", "-enc"],
                     }
                 ],
-                "epc": {
-                    "explain": "Explain text",
-                    "plan": ["Isolate the host."],
-                    "checklist": ["Item one", "Item two"],
-                    "confidence": 0.9,
-                    "citations": ["powershell"],
-                },
                 "audit": {"mapping_source": "rule"},
             },
         }
@@ -559,34 +584,41 @@ class SettingsApplyFlowTests(_BaseUiGlueTest):
                 "otx": True,
                 "threatfox": False,
             },
-            history_enabled=True,
         )
         self.window._sync_settings_to_ui()
         self.assertTrue(self.window.provider_checkboxes["virustotal"].isChecked())
         self.assertFalse(self.window.provider_checkboxes["abuseipdb"].isChecked())
         self.assertEqual(self.window.api_key_inputs["virustotal"].text(), " vt ")
-        self.assertFalse(self.window._history_nav_btn.isHidden())
 
-    def test_apply_settings_saves_sanitized_keys_and_updates_history_visibility(self) -> None:
+    def test_apply_settings_saves_sanitized_keys(self) -> None:
         self.window.api_key_inputs["virustotal"].setText("  vt-key  ")
         self.window.api_key_inputs["abuseipdb"].setText(" ")
         self.window.provider_checkboxes["abuseipdb"].setChecked(False)
-        self.window.history_toggle.setChecked(True)
         with patch("src.desktop_app.save_persisted_settings", return_value=True) as save_mock:
             self.window._apply_settings()
         save_mock.assert_called_once()
         self.assertEqual(self.window.settings_state.api_keys["virustotal"], "vt-key")
         self.assertEqual(self.window.settings_state.api_keys["abuseipdb"], "")
-        self.assertTrue(self.window.settings_state.history_enabled)
-        self.assertFalse(self.window._history_nav_btn.isHidden())
-        self.assertIn("saved and applied", self.window.settings_status_label.text().lower())
+        self.assertIn("saved", self.window.settings_status_label.text().lower())
 
     def test_update_provider_key_status_labels(self) -> None:
+        """Key status wording must be honest about what actually happened.
+
+        A key typed into the field but not yet persisted should read as
+        "Unsaved" (amber) rather than claiming "Key entered" — the old
+        wording implied a validated / accepted state. Once saved locally
+        and re-synced, the label switches to "Key saved". An empty field
+        reads as "Not set".
+        """
         self.window.api_key_inputs["virustotal"].setText("x")
         self.window.api_key_inputs["abuseipdb"].setText("")
         self.window._update_provider_key_statuses()
-        self.assertEqual(self.window.provider_key_status_labels["virustotal"].text(), "Key entered")
-        self.assertEqual(self.window.provider_key_status_labels["abuseipdb"].text(), "Key missing")
+        self.assertEqual(self.window.provider_key_status_labels["virustotal"].text(), "Unsaved")
+        self.assertEqual(self.window.provider_key_status_labels["abuseipdb"].text(), "Not set")
+
+        self.window.settings_state.api_keys["virustotal"] = "x"
+        self.window._update_provider_key_statuses()
+        self.assertEqual(self.window.provider_key_status_labels["virustotal"].text(), "Key saved")
 
 
 class ExportButtonGlueTests(_BaseUiGlueTest):
@@ -611,17 +643,6 @@ class ExportButtonGlueTests(_BaseUiGlueTest):
         self.assertEqual(export_json_mock.call_args.args[0], "C:/tmp/ioc.json")
         info.assert_called_once()
 
-    def test_export_ioc_csv_calls_export_with_selected_path(self) -> None:
-        self.window.last_ioc_rows = [{"ioc": "8.8.8.8", "status": "clean"}]
-        with (
-            patch("src.desktop_app.QFileDialog.getSaveFileName", return_value=("C:/tmp/ioc.csv", "CSV Files (*.csv)")),
-            patch("src.desktop_app.export_ioc_csv") as export_csv_mock,
-            patch("src.desktop_app.QMessageBox.information") as info,
-        ):
-            self.window._export_ioc_csv()
-        export_csv_mock.assert_called_once_with("C:/tmp/ioc.csv", self.window.last_ioc_rows)
-        info.assert_called_once()
-
     def test_export_soc_json_calls_export_with_selected_path(self) -> None:
         self.window.last_soc_payload = {"ok": True}
         with (
@@ -638,24 +659,10 @@ class ExportButtonGlueTests(_BaseUiGlueTest):
         with (
             patch("src.desktop_app.QMessageBox.information") as info,
             patch("src.desktop_app.export_json") as export_json_mock,
-            patch("src.desktop_app.export_soc_csv") as export_soc_csv_mock,
         ):
             self.window._export_soc_json()
-            self.window._export_soc_csv()
-        self.assertEqual(info.call_count, 2)
-        export_json_mock.assert_not_called()
-        export_soc_csv_mock.assert_not_called()
-
-    def test_export_soc_csv_calls_export_with_selected_path(self) -> None:
-        self.window.last_soc_payload = {"ok": True}
-        with (
-            patch("src.desktop_app.QFileDialog.getSaveFileName", return_value=("C:/tmp/soc.csv", "CSV Files (*.csv)")),
-            patch("src.desktop_app.export_soc_csv") as export_csv_mock,
-            patch("src.desktop_app.QMessageBox.information") as info,
-        ):
-            self.window._export_soc_csv()
-        export_csv_mock.assert_called_once_with("C:/tmp/soc.csv", self.window.last_soc_payload)
         info.assert_called_once()
+        export_json_mock.assert_not_called()
 
 
 class ErrorHandlingPathTests(_BaseUiGlueTest):

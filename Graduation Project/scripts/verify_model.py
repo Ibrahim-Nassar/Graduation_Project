@@ -34,12 +34,13 @@ CASES = [
 
 
 def _describe(payload: dict) -> str:
-    ok = payload.get("ok")
     summary = payload.get("summary", {}) or {}
-    if not ok:
-        return f"no_mapping (reason={payload.get('reason')})"
-    tech = summary.get("technique_id", "?")
-    conf = summary.get("confidence", 0.0)
+    if not payload.get("ok"):
+        return f"ERROR (reason={payload.get('reason')}): {payload.get('error')}"
+    if payload.get("status") == "no_mapping":
+        return f"{'no_mapping':12s} entities={summary.get('entity_count', 0)}"
+    tech = summary.get("technique_id") or "?"
+    strength = summary.get("evidence_strength") or "unknown"
     src = summary.get("mapping_source")
     tok_hint = ""
     mappings = (payload.get("result", {}) or {}).get("attack_mapping") or []
@@ -50,7 +51,7 @@ def _describe(payload: dict) -> str:
                 break
         if tok_hint:
             break
-    return f"{tech:12s} conf={float(conf):.3f} source={src}{tok_hint}"
+    return f"{tech:12s} evidence={strength:8s} source={src}{tok_hint}"
 
 
 for label, raw in CASES:

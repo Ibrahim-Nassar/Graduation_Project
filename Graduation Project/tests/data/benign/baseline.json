@@ -1,0 +1,936 @@
+{
+  "generated_at": "2026-09-05T04:08:57+00:00",
+  "total_lines": 836,
+  "counts_by_strength": {
+    "strong": 6,
+    "moderate": 179,
+    "weak": 0
+  },
+  "findings": [
+    {
+      "file": "seed_linux.log",
+      "line": 6,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 7,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 8,
+      "technique_id": "T1082"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 10,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 11,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 12,
+      "technique_id": "T1016"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 16,
+      "technique_id": "T1053"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 17,
+      "technique_id": "T1053"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 21,
+      "technique_id": "T1083"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 23,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 81,
+      "technique_id": "T1040"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 82,
+      "technique_id": "T1040"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 112,
+      "technique_id": "T1048"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 113,
+      "technique_id": "T1048"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 167,
+      "technique_id": "T1548"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 178,
+      "technique_id": "T1040"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 201,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 205,
+      "technique_id": "T1053"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 209,
+      "technique_id": "T1040"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 212,
+      "technique_id": "T1105"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 213,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 229,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 230,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_linux.log",
+      "line": 232,
+      "technique_id": "T1048"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 1,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 2,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 4,
+      "technique_id": "T1082"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 5,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 6,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 7,
+      "technique_id": "T1016"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 11,
+      "technique_id": "T1482"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 12,
+      "technique_id": "T1012"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 13,
+      "technique_id": "T1012"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 22,
+      "technique_id": "T1218"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 23,
+      "technique_id": "T1218"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 27,
+      "technique_id": "T1021"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 28,
+      "technique_id": "T1021"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 29,
+      "technique_id": "T1021"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 30,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 31,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 32,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 33,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 34,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 35,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 36,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 37,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 57,
+      "technique_id": "T1482"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 64,
+      "technique_id": "T1016"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 69,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 80,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 81,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 82,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 83,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 84,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 85,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 86,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 87,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 88,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 89,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 90,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 91,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 92,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 93,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 94,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 95,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 96,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 97,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 98,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 99,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 100,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 101,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 102,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 103,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 104,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 105,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 106,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 107,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 108,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 109,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 110,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 111,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 112,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 113,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 114,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 115,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 116,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 117,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 118,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 119,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 120,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 121,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 122,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 123,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 124,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 125,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 126,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 127,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 128,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 135,
+      "technique_id": "T1053"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 146,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 146,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 147,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 148,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 149,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 150,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 150,
+      "technique_id": "T1082"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 151,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 152,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 153,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 154,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 155,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 156,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 157,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 158,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 159,
+      "technique_id": "T1012"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 160,
+      "technique_id": "T1012"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 165,
+      "technique_id": "T1053"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 171,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 172,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 174,
+      "technique_id": "T1082"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 175,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 176,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 178,
+      "technique_id": "T1218"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 179,
+      "technique_id": "T1218"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 182,
+      "technique_id": "T1482"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 183,
+      "technique_id": "T1021"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 188,
+      "technique_id": "T1087"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 189,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 190,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 191,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 192,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 193,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 194,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 195,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 196,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 197,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 198,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 199,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 200,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 201,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 202,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 203,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 204,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 205,
+      "technique_id": "T1059"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 235,
+      "technique_id": "T1016"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 240,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 241,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 242,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 243,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 244,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 245,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 246,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 247,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 248,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 249,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 250,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 251,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 252,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 253,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 254,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 255,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 256,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 257,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 261,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 262,
+      "technique_id": "T1021"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 264,
+      "technique_id": "T1218"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 265,
+      "technique_id": "T1482"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 266,
+      "technique_id": "T1012"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 267,
+      "technique_id": "T1057"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 268,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 269,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 270,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 271,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 272,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 273,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 274,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 275,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 276,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 277,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 278,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 279,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 280,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 281,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 282,
+      "technique_id": "T1033"
+    },
+    {
+      "file": "seed_windows.log",
+      "line": 283,
+      "technique_id": "T1033"
+    }
+  ]
+}

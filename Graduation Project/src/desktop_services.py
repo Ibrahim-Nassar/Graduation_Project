@@ -10,29 +10,35 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.model import load_model
-from src.pipeline import NoMappingError, run
+from src.pipeline import run
 import src.pipeline as pipeline_module
 
 PROVIDER_ORDER = ("virustotal", "abuseipdb", "otx", "threatfox")
 SUPPORTED_MANUAL_TYPES = {"ip", "domain", "url", "hash"}
 _SETTINGS_FILE = Path.home() / ".soc_workstation_settings.json"
 
-# Default location of the trained ML fallback classifier artifact.
-# The app will transparently load this when no explicit ``model_path`` is
-# provided to ``analyze_soc_log``. Missing / unreadable artifacts are
-# tolerated — the pipeline simply continues without an ML fallback.
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "artifacts" / "attack_classifier.pkl"
+ASSESSMENT_VALUES: tuple[str, ...] = (
+    "corroborated_malicious",
+    "providers_disagree",
+    "single_source_malicious",
+    "suspicious_only",
+    "no_suspicious_findings",
+    "insufficient_data",
+)
 
 
 def _resolve_fallback_model(model_path: str) -> Any | None:
     """Load the ML fallback classifier, degrading safely on any failure.
 
-    If ``model_path`` is empty the default bundled artifact is attempted.
-    Any load error (missing file, unpickle error, incompatible object) is
-    swallowed so the rule-based pipeline keeps running without ML fallback.
+    The classifier is only loaded when an explicit ``model_path`` is given;
+    an empty path means "no ML fallback".  Any load error (missing file,
+    unpickle error, incompatible object) is swallowed so the rule-based
+    pipeline keeps running without ML fallback.
     """
     explicit = model_path.strip()
-    candidate = Path(explicit) if explicit else DEFAULT_MODEL_PATH
+    if not explicit:
+        return None
+    candidate = Path(explicit)
     if not candidate.exists():
         return None
     try:
@@ -242,7 +248,6 @@ def _supports_forced_ioc_type(ioc_module: Any) -> bool:
         "_enabled_providers",
         "_normalize_provider_result",
         "_aggregate_status",
-        "_aggregate_score",
         "vt_lookup",
         "abuseipdb_lookup",
         "otx_lookup",
@@ -259,6 +264,23 @@ def _scan_with_forced_type(
     providers: dict[str, bool] | None,
     api_keys: dict[str, str] | None,
 ) -> dict[str, Any]:
+    # The forced-type path bypasses ``scan_ioc``, so it must apply the same
+    # private/internal guard before any provider is contacted.
+    if hasattr(ioc_module, "is_scannable_ioc"):
+        scannable, skip_reason = ioc_module.is_scannable_ioc(ioc, forced_type)
+        if not scannable:
+            verdict_skipped: dict[str, Any] = {}
+            if hasattr(ioc_module, "compute_verdict"):
+                verdict_skipped = ioc_module.compute_verdict({})
+            return {
+                "ioc": ioc,
+                "type": forced_type,
+                "status": "skipped",
+                "reason": skip_reason,
+                "providers": {},
+                "verdict": verdict_skipped,
+            }
+
     enabled = ioc_module._enabled_providers(providers)  # type: ignore[attr-defined]
     keys = api_keys or {}
     provider_results: dict[str, dict[str, Any]] = {}
@@ -276,7 +298,6 @@ def _scan_with_forced_type(
         "ioc": ioc,
         "type": forced_type,
         "status": ioc_module._aggregate_status(provider_results),  # type: ignore[attr-defined]
-        "score": ioc_module._aggregate_score(provider_results),  # type: ignore[attr-defined]
         "verdict": verdict,
         "providers": provider_results,
     }
@@ -314,7 +335,6 @@ def scan_iocs(
                 "ioc": ioc,
                 "type": "unknown",
                 "status": "error",
-                "score": 0,
                 "providers": {},
                 "errors": ["IOC enrichment module unavailable"],
             }
@@ -349,6 +369,9 @@ def scan_iocs(
         verdict_data = scan_result.get("verdict", {})
         if not isinstance(verdict_data, dict):
             verdict_data = {}
+        assessment = str(verdict_data.get("assessment", "insufficient_data"))
+        if assessment not in ASSESSMENT_VALUES:
+            assessment = "insufficient_data"
 
         rows.append(
             {
@@ -356,9 +379,8 @@ def scan_iocs(
                 "detected_type": detected_type,
                 "effective_type": effective_type,
                 "status": str(scan_result.get("status", "unknown")),
-                "score": int(scan_result.get("score", 0) or 0),
-                "verdict": str(verdict_data.get("verdict", "Unknown")),
-                "verdict_confidence": int(verdict_data.get("confidence", 0) or 0),
+                "skip_reason": str(scan_result.get("reason", "") or ""),
+                "assessment": assessment,
                 "verdict_reasoning": str(verdict_data.get("reasoning", "")),
                 "virustotal": provider_statuses["virustotal"],
                 "abuseipdb": provider_statuses["abuseipdb"],
@@ -375,14 +397,15 @@ def scan_iocs(
 
 
 def summarize_ioc_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"total": 0, "malicious": 0, "suspicious": 0, "clean": 0, "unknown": 0, "error_rows": 0}
+    summary = {"total": 0}
+    summary.update({name: 0 for name in ASSESSMENT_VALUES})
+    summary["error_rows"] = 0
     for row in rows:
         summary["total"] += 1
-        status = str(row.get("status", "unknown")).lower()
-        if status in {"malicious", "suspicious", "clean", "unknown"}:
-            summary[status] += 1
-        else:
-            summary["unknown"] += 1
+        assessment = str(row.get("assessment", "insufficient_data")).lower()
+        if assessment not in ASSESSMENT_VALUES:
+            assessment = "insufficient_data"
+        summary[assessment] += 1
         if int(row.get("error_count", 0) or 0) > 0:
             summary["error_rows"] += 1
     return summary
@@ -423,73 +446,49 @@ def analyze_soc_log(
             ioc_api_keys=ioc_api_keys,
         )
         dump = result.model_dump(mode="json")
+        entity_values = [str(e.get("value", "")) for e in dump.get("entities", []) if e.get("type") in {"ipv4", "domain"}]
+
+        if result.status == "no_mapping":
+            # Expected "no ATT&CK rule matched" outcome: a completed
+            # analysis, not an error.
+            summary = {
+                "technique_id": None,
+                "technique_name": None,
+                "mapping_source": "none",
+                "entity_count": len(dump["entities"]),
+            }
+            out: dict[str, Any] = {
+                "ok": True,
+                "status": "no_mapping",
+                "summary": summary,
+                "result": dump,
+            }
+            out["analyst_brief"] = generate_analyst_brief(out)
+            out["investigation_summary"] = generate_investigation_summary(out)
+            for ev in entity_values:
+                correlation_store.record_ioc(ev, "seen", "soc_analysis")
+            out["correlation_insights"] = correlation_store.get_ioc_insights(entity_values)
+            return out
+
         top_mapping = dump["attack_mapping"][0]
         summary = {
             "technique_id": top_mapping["technique_id"],
             "technique_name": top_mapping["technique_name"],
-            "confidence": top_mapping["confidence"],
+            "evidence_strength": top_mapping["evidence_strength"],
             "mapping_source": dump["audit"].get("mapping_source"),
             "entity_count": len(dump["entities"]),
         }
-        out: dict[str, Any] = {"ok": True, "summary": summary, "result": dump}
+        out = {"ok": True, "status": "mapped", "summary": summary, "result": dump}
         out["analyst_brief"] = generate_analyst_brief(out)
         out["investigation_summary"] = generate_investigation_summary(out)
 
-        entity_values = [str(e.get("value", "")) for e in dump.get("entities", []) if e.get("type") in {"ipv4", "domain"}]
         for ev in entity_values:
             correlation_store.record_ioc(ev, "seen", "soc_analysis")
         correlation_store.record_technique(
             top_mapping["technique_id"], top_mapping["technique_name"],
-            entity_values, top_mapping["confidence"],
+            entity_values, top_mapping["evidence_strength"],
         )
         out["correlation_insights"] = correlation_store.get_all_insights(entity_values, top_mapping["technique_id"])
-        return out
-    except NoMappingError as exc:
-        # Genuine, expected "no ATT&CK rule matched" path.  We *only* get
-        # here when the pipeline explicitly decided there was no mapping —
-        # a real ``ValidationError`` (schema/correctness bug) is NOT
-        # swallowed here and falls through to the ``Exception`` handler
-        # below as a real failure.
-        audit: dict[str, Any] = {
-            "mapping_source": "none",
-            "normalized_event": dict(exc.normalized_event),
-            "entity_count": len(exc.entities),
-            "mapping_count": 0,
-        }
-        if exc.ioc_enrichment is not None:
-            audit["ioc_enrichment"] = list(exc.ioc_enrichment)
-        partial_result: dict[str, Any] = {
-            "entities": [entity.model_dump(mode="json") for entity in exc.entities],
-            "attack_mapping": [],
-            "epc": {},
-            "audit": audit,
-        }
-        summary = {
-            "technique_id": "N/A",
-            "technique_name": "Not mapped",
-            "confidence": 0.0,
-            "mapping_source": "none",
-            "entity_count": len(exc.entities),
-        }
-        out: dict[str, Any] = {
-            "ok": False,
-            "summary": summary,
-            "result": partial_result,
-            "error": "No ATT&CK mapping could be produced for this log.",
-            "reason": "no_mapping",
-            "partial_result": partial_result,
-        }
-        out["analyst_brief"] = generate_analyst_brief(out)
-        out["investigation_summary"] = generate_investigation_summary(out)
-
-        entity_values = [
-            str(e.get("value", ""))
-            for e in partial_result.get("entities", [])
-            if e.get("type") in {"ipv4", "domain"}
-        ]
-        for ev in entity_values:
-            correlation_store.record_ioc(ev, "seen", "soc_analysis")
-        out["correlation_insights"] = correlation_store.get_ioc_insights(entity_values)
         return out
     except ValidationError as exc:
         # A real schema / correctness failure inside the pipeline — e.g.
@@ -520,13 +519,12 @@ def export_json(path: str, payload: Any) -> None:
 def export_ioc_csv(path: str, rows: list[dict[str, Any]]) -> None:
     columns = [
         "ioc",
-        "verdict",
-        "verdict_confidence",
+        "assessment",
         "verdict_reasoning",
         "detected_type",
         "effective_type",
         "status",
-        "score",
+        "skip_reason",
         "virustotal",
         "abuseipdb",
         "otx",
@@ -556,9 +554,8 @@ def export_soc_csv(path: str, payload: dict[str, Any]) -> None:
     if not summary and isinstance(result, dict):
         audit = result.get("audit", {}) if isinstance(result.get("audit"), dict) else {}
         summary = {
-            "technique_id": "N/A",
-            "technique_name": "Not mapped",
-            "confidence": 0.0,
+            "technique_id": None,
+            "technique_name": None,
             "mapping_source": str(audit.get("mapping_source", "none")),
             "entity_count": int(audit.get("entity_count", len(result.get("entities", []) or [])) or 0),
         }
@@ -567,7 +564,7 @@ def export_soc_csv(path: str, payload: dict[str, Any]) -> None:
         rows.append({"section": "analyst_brief", "item": "brief", "value": analyst_brief})
 
     for key, value in summary.items():
-        rows.append({"section": "summary", "item": key, "value": str(value)})
+        rows.append({"section": "summary", "item": key, "value": "" if value is None else str(value)})
 
     for index, entity in enumerate(result.get("entities", []), start=1):
         rows.append({"section": "entity", "item": f"{index}:{entity.get('type', 'unknown')}", "value": str(entity.get("value", ""))})
@@ -581,7 +578,7 @@ def export_soc_csv(path: str, payload: dict[str, Any]) -> None:
             }
         )
 
-    epc = result.get("epc", {})
+    epc = result.get("epc") or {}
     rows.append({"section": "epc", "item": "explain", "value": str(epc.get("explain", ""))})
     rows.append(
         {"section": "epc", "item": "plan", "value": " | ".join(str(item) for item in epc.get("plan", []))}
@@ -596,11 +593,14 @@ def export_soc_csv(path: str, payload: dict[str, Any]) -> None:
 
     enrichment = result.get("audit", {}).get("ioc_enrichment", [])
     for index, item in enumerate(enrichment, start=1):
+        value = str(item.get("status", "unknown"))
+        if value == "skipped" and item.get("reason"):
+            value = f"skipped ({item.get('reason')})"
         rows.append(
             {
                 "section": "ioc_enrichment",
                 "item": f"{index}:{item.get('ioc', '')}",
-                "value": str(item.get("status", "unknown")),
+                "value": value,
             }
         )
 
@@ -626,10 +626,10 @@ def generate_analyst_brief(payload: dict[str, Any]) -> str:
     if not result and isinstance(payload.get("partial_result"), dict):
         result = payload.get("partial_result", {})
 
-    technique_id = str(summary.get("technique_id", "N/A"))
-    technique_name = str(summary.get("technique_name", "N/A"))
+    technique_id = str(summary.get("technique_id") or "N/A")
+    technique_name = str(summary.get("technique_name") or "N/A")
     mapping_source = str(summary.get("mapping_source", "none"))
-    confidence = float(summary.get("confidence", 0.0) or 0.0)
+    evidence_strength = str(summary.get("evidence_strength") or "")
     entity_count = int(summary.get("entity_count", 0) or 0)
 
     entities = result.get("entities", []) if isinstance(result.get("entities"), list) else []
@@ -659,14 +659,16 @@ def generate_analyst_brief(payload: dict[str, Any]) -> str:
         return " ".join(parts)
 
     primary = mappings[0]
+    if not evidence_strength and isinstance(primary, dict):
+        evidence_strength = str(primary.get("evidence_strength") or "")
 
     # The analyst brief is intentionally a single short line: the full
-    # mapping row (technique + name + source + confidence) is already
-    # visible in the MITRE table and the top strip, so repeating it all
-    # here just produces a wall of text.  We only surface the prediction
-    # source + the technique label + the confidence; any further rationale
-    # lives on the mapping row itself (evidence_refs / rationale field)
-    # where the analyst can inspect it on demand.
+    # mapping row (technique + name + source + evidence strength) is
+    # already visible in the MITRE table and the top strip, so repeating
+    # it all here just produces a wall of text.  We only surface the
+    # prediction source + the technique label + the evidence strength; any
+    # further rationale lives on the mapping row itself (evidence_refs /
+    # rationale field) where the analyst can inspect it on demand.
     if mapping_source == "ml_fallback":
         prefix = "ML prediction"
     elif mapping_source == "rule":
@@ -676,7 +678,7 @@ def generate_analyst_brief(payload: dict[str, Any]) -> str:
 
     return (
         f"{prefix}: {technique_id} \u2014 {technique_name} "
-        f"({confidence:.0%} confidence)."
+        f"(evidence: {evidence_strength or 'unknown'})."
     )
 
 
@@ -717,12 +719,12 @@ class CorrelationStore:
             "timestamp": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
 
-    def record_technique(self, technique_id: str, technique_name: str, entities: list[str], confidence: float) -> None:
+    def record_technique(self, technique_id: str, technique_name: str, entities: list[str], evidence_strength: str) -> None:
         self._technique_history.append({
             "technique_id": technique_id,
             "technique_name": technique_name,
             "entities": entities,
-            "confidence": confidence,
+            "evidence_strength": evidence_strength,
             "timestamp": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
 
@@ -787,19 +789,11 @@ _TECHNIQUE_DESCRIPTIONS: dict[str, str] = {
     "T1110": "brute-force password guessing against authentication services",
 }
 
-_SEVERITY_ACTIONS: dict[str, str] = {
-    "critical": "Immediately isolate affected hosts and escalate to incident response.",
-    "high": "Prioritize investigation and contain affected systems within the hour.",
-    "medium": "Investigate within the shift and apply targeted mitigations.",
-    "low": "Schedule review and monitor for recurrence.",
-    "info": "No immediate action required — archive for awareness.",
-}
-
 
 def generate_investigation_summary(payload: dict[str, Any]) -> dict[str, str]:
     """Generate a structured investigation summary from SOC analysis results.
 
-    Returns a dict with ``what_happened``, ``severity_assessment``, and ``next_steps``.
+    Returns a dict with ``what_happened`` and ``next_steps``.
     """
     summary = payload.get("summary", {})
     if not isinstance(summary, dict):
@@ -810,16 +804,14 @@ def generate_investigation_summary(payload: dict[str, Any]) -> dict[str, str]:
     if not result and isinstance(payload.get("partial_result"), dict):
         result = payload.get("partial_result", {})
 
-    technique_id = str(summary.get("technique_id", "N/A"))
-    technique_name = str(summary.get("technique_name", "N/A"))
-    confidence = float(summary.get("confidence", 0.0) or 0.0)
+    technique_id = str(summary.get("technique_id") or "N/A")
+    technique_name = str(summary.get("technique_name") or "N/A")
+    evidence_strength = str(summary.get("evidence_strength") or "unknown")
     entity_count = int(summary.get("entity_count", 0) or 0)
     mapping_source = str(summary.get("mapping_source", "none"))
 
     entities = result.get("entities", []) if isinstance(result.get("entities"), list) else []
     epc = result.get("epc", {}) if isinstance(result.get("epc"), dict) else {}
-
-    severity = assess_severity(payload)
 
     entity_subjects = []
     for e in entities[:4]:
@@ -841,45 +833,21 @@ def generate_investigation_summary(payload: dict[str, Any]) -> dict[str, str]:
         what = f"The log indicates {description}"
         if mapping_source == "ml_fallback":
             what += " (identified via ML model — manual verification recommended)"
-        what += f", mapped to {technique_id} ({technique_name}) at {confidence:.0%} confidence."
+        what += f", mapped to {technique_id} ({technique_name}) with {evidence_strength} evidence."
         if entity_subjects:
             what += f" Involved entities: {', '.join(entity_subjects)}."
+        if evidence_strength == "weak":
+            what += " Note: evidence is weak — treat as preliminary."
 
-    sev_text = f"Severity: {severity.upper()}."
-    if confidence < 0.6 and technique_id != "N/A":
-        sev_text += " Note: confidence is below 60% — treat as preliminary."
-
-    action = _SEVERITY_ACTIONS.get(severity, "Monitor and document findings.")
     plan_items = epc.get("plan", []) if isinstance(epc.get("plan"), list) else []
-    if plan_items:
-        action += " Specifically: " + plan_items[0]
+    if technique_id == "N/A":
+        action = "Review extracted fields for missing context, add correlated log lines, and re-analyze."
+    elif plan_items:
+        action = "Next step: " + plan_items[0]
+    else:
+        action = "Review the cited evidence and follow the response playbook."
 
     return {
         "what_happened": what,
-        "severity_assessment": sev_text,
         "next_steps": action,
     }
-
-
-_HIGH_SEVERITY_TECHNIQUES = frozenset({"T1003", "T1055"})
-_MEDIUM_SEVERITY_TECHNIQUES = frozenset({"T1059", "T1070", "T1110", "T1053", "T1071"})
-
-
-def assess_severity(payload: dict[str, Any]) -> str:
-    """Derive a severity level from SOC analysis results."""
-    summary = payload.get("summary", {})
-    if not isinstance(summary, dict):
-        return "info"
-    confidence = float(summary.get("confidence", 0) or 0)
-    technique_id = str(summary.get("technique_id", "N/A"))
-    if technique_id == "N/A":
-        return "info"
-    if technique_id in _HIGH_SEVERITY_TECHNIQUES and confidence >= 0.7:
-        return "critical"
-    if technique_id in _HIGH_SEVERITY_TECHNIQUES:
-        return "high"
-    if technique_id in _MEDIUM_SEVERITY_TECHNIQUES and confidence >= 0.8:
-        return "high"
-    if confidence >= 0.6:
-        return "medium"
-    return "low"

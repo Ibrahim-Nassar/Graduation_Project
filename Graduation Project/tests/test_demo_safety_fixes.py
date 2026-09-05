@@ -3,19 +3,18 @@
 Each test here pins one of the correctness fixes so later refactors cannot
 silently undo them:
 
-1. ``NoMappingError`` is the *only* thing that gets re-labeled as
-   "no_mapping" by the service layer — real ``ValidationError``s
-   (internal correctness bugs) MUST surface honestly.
-2. IOC verdict confidence no longer produces "Malicious @ 20%"-style
-   contradictions; single credible provider verdicts stay trustworthy;
+1. A ``Result`` with ``status="no_mapping"`` is the *only* thing that
+   gets reported as "no_mapping" by the service layer — real
+   ``ValidationError``s (internal correctness bugs) MUST surface honestly.
+2. IOC verdicts are categorical assessments with no numeric confidence;
    AbuseIPDB doesn't flag benign public IPs as suspicious.
 3. Saving settings invalidates the IOC scan cache so stale verdicts
    aren't served after the user fixes a bad key.
 4. SOC Analysis no longer advertises a live IOC-enrichment capability —
    the dead ``ioc_providers`` / ``ioc_api_keys`` plumbing is gone.
-5. Primary ATT&CK mapping is chosen by (severity tier, confidence), not
-   by match order, so summaries reflect the most *important* technique
-   when multiple fire.
+5. Primary ATT&CK mapping is chosen by (severity tier, evidence
+   strength), not by match order, so summaries reflect the most
+   *important* technique when multiple fire.
 """
 
 from __future__ import annotations
@@ -41,7 +40,6 @@ from src.ioc_enrichment import (
     scan_ioc,
 )
 from src.pipeline import (
-    NoMappingError,
     _order_mappings_by_importance,
     _primary_sort_key,
     run,
@@ -54,27 +52,24 @@ from src.pipeline import (
 
 
 class ExplicitNoMappingStateTests(unittest.TestCase):
-    def test_pipeline_raises_no_mapping_error_not_validation_error(self) -> None:
-        """Benign input with zero rule hits should raise ``NoMappingError``.
+    def test_pipeline_returns_no_mapping_status_not_validation_error(self) -> None:
+        """Benign input with zero rule hits yields ``status="no_mapping"``.
 
         Previously this surfaced as a generic ``ValidationError`` because
-        the ``Result`` contract requires ``min_length=1`` for mappings,
+        the ``Result`` contract required ``min_length=1`` for mappings,
         which made real schema bugs look identical to "no mapping".
         """
-        with self.assertRaises(NoMappingError):
-            run("benign heartbeat ok status green")
+        result = run("benign heartbeat ok status green")
+        self.assertEqual(result.status, "no_mapping")
+        self.assertEqual(result.attack_mapping, [])
+        self.assertIsNone(result.epc)
 
-    def test_no_mapping_error_carries_partial_context(self) -> None:
-        try:
-            run("authentication failed user=alice src_ip=10.0.0.5")
-        except NoMappingError as exc:
-            self.assertGreaterEqual(len(exc.entities), 1)
-            self.assertIsInstance(exc.normalized_event, dict)
-        else:
-            # If a rule ever matches this log in the future that's fine —
-            # the contract we care about is only that unmapped logs raise
-            # NoMappingError, not ValidationError.
-            pass
+    def test_no_mapping_result_carries_partial_context(self) -> None:
+        result = run("authentication failed user=alice src_ip=10.0.0.5")
+        if result.status == "no_mapping":
+            self.assertGreaterEqual(len(result.entities), 1)
+            self.assertIsInstance(result.audit.get("normalized_event"), dict)
+            self.assertEqual(result.audit.get("mapping_source"), "none")
 
     def test_service_layer_does_not_swallow_real_validation_error(self) -> None:
         """A ``ValidationError`` from the pipeline is a real bug, not
@@ -92,11 +87,13 @@ class ExplicitNoMappingStateTests(unittest.TestCase):
         self.assertEqual(payload.get("reason"), "validation_error")
         self.assertNotEqual(payload.get("reason"), "no_mapping")
 
-    def test_service_layer_translates_no_mapping_error_to_reason_no_mapping(self) -> None:
+    def test_service_layer_reports_no_mapping_as_completed_status(self) -> None:
         payload = analyze_soc_log("benign heartbeat ok status green")
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload.get("reason"), "no_mapping")
-        self.assertIn("No ATT&CK mapping could be produced", payload["error"])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload.get("status"), "no_mapping")
+        self.assertNotIn("error", payload)
+        self.assertIsNone(payload["summary"]["technique_id"])
+        self.assertEqual(payload["summary"]["mapping_source"], "none")
 
     def test_ui_presenter_classifies_validation_error_as_error_not_no_mapping(self) -> None:
         from src.ui_presenter import AnalysisState, build_breakdown
@@ -112,41 +109,38 @@ class ExplicitNoMappingStateTests(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Fix #2: IOC verdict confidence
+# Fix #2: IOC verdict is a categorical assessment
 # ──────────────────────────────────────────────────────────────────────────
 
 
-class IocVerdictConfidenceTests(unittest.TestCase):
-    def test_single_credible_malicious_provider_has_meaningful_confidence(self) -> None:
-        """A lone malicious hit from VirusTotal used to display at ~33%
-        confidence because of the old ``coverage_factor`` penalty.  That
-        made the verdict and the displayed confidence look contradictory.
+class IocVerdictAssessmentTests(unittest.TestCase):
+    def test_single_malicious_provider_is_labelled_single_source(self) -> None:
+        """A lone malicious hit is reported as exactly that — one source —
+        rather than dressed up with a fabricated confidence percentage.
         """
         results = {"virustotal": {"status": "malicious"}}
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Malicious")
-        # Must NOT be in the old "contradictory" band (< 50%).
-        self.assertGreaterEqual(verdict["confidence"], 50)
+        self.assertEqual(verdict["assessment"], "single_source_malicious")
+        self.assertNotIn("confidence", verdict)
 
-    def test_single_clean_provider_has_meaningful_confidence(self) -> None:
+    def test_single_clean_provider_is_no_suspicious_findings(self) -> None:
         results = {"virustotal": {"status": "clean"}}
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Clean")
-        self.assertGreaterEqual(verdict["confidence"], 50)
+        self.assertEqual(verdict["assessment"], "no_suspicious_findings")
+        self.assertNotIn("confidence", verdict)
 
-    def test_two_agreeing_providers_have_strong_confidence(self) -> None:
+    def test_two_agreeing_providers_are_corroborated(self) -> None:
         results = {
             "virustotal": {"status": "malicious"},
             "otx": {"status": "malicious"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Malicious")
-        self.assertGreaterEqual(verdict["confidence"], 90)
+        self.assertEqual(verdict["assessment"], "corroborated_malicious")
+        self.assertEqual(sorted(verdict["malicious"]), ["otx", "virustotal"])
 
-    def test_verdict_never_looks_contradictorily_weak(self) -> None:
-        """No (verdict, confidence) row should ever display a decisive
-        classification with <50 confidence — that's the "Malicious @ 20%"
-        anti-pattern we are explicitly defending against.
+    def test_verdict_never_carries_a_numeric_field(self) -> None:
+        """No assessment row carries a numeric "confidence" — the
+        "Malicious @ 20%" anti-pattern cannot be rendered any more.
         """
         scenarios: list[dict[str, dict[str, str]]] = [
             {"virustotal": {"status": "malicious"}},
@@ -156,11 +150,11 @@ class IocVerdictConfidenceTests(unittest.TestCase):
         ]
         for scenario in scenarios:
             verdict = compute_verdict(scenario)
-            if verdict["verdict"] in {"Malicious", "Suspicious", "Clean"}:
-                self.assertGreaterEqual(
-                    verdict["confidence"], 50,
-                    f"Decisive verdict with low confidence: {verdict} for {scenario}",
-                )
+            self.assertNotIn("confidence", verdict)
+            self.assertFalse(
+                any(isinstance(value, (int, float)) and not isinstance(value, bool) for value in verdict.values()),
+                f"numeric field leaked into verdict: {verdict} for {scenario}",
+            )
 
     def test_abuseipdb_benign_low_confidence_ip_is_not_flagged_suspicious(self) -> None:
         """Public IPs routinely accrue a handful of low-effort reports on
@@ -318,11 +312,11 @@ class SocIocEnrichmentPlumbingTests(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _mapping(tid: str, confidence: float = 0.8) -> AttackMapping:
+def _mapping(tid: str, evidence_strength: str = "moderate") -> AttackMapping:
     return AttackMapping(
         technique_id=tid,
         technique_name=f"Technique {tid}",
-        confidence=confidence,
+        evidence_strength=evidence_strength,  # type: ignore[arg-type]
         rationale="test",
         evidence_refs=["evidence"],
     )
@@ -332,27 +326,34 @@ class PrimaryMappingSelectionTests(unittest.TestCase):
     def test_high_severity_beats_low_severity_regardless_of_order(self) -> None:
         # Discovery rule matched first, credential-dumping rule matched
         # second.  Primary MUST be the credential-dumping one.
-        mappings = [_mapping("T1082", 0.9), _mapping("T1003", 0.7)]
+        mappings = [_mapping("T1082", "strong"), _mapping("T1003", "moderate")]
         ordered = _order_mappings_by_importance(mappings)
         self.assertEqual(ordered[0].technique_id, "T1003")
         # All mappings preserved — the primary changes, nothing is dropped.
         self.assertEqual({m.technique_id for m in ordered}, {"T1003", "T1082"})
 
-    def test_confidence_breaks_ties_within_same_severity_tier(self) -> None:
-        mappings = [_mapping("T1059", 0.6), _mapping("T1071", 0.9)]
+    def test_evidence_strength_breaks_ties_within_same_severity_tier(self) -> None:
+        mappings = [_mapping("T1059", "weak"), _mapping("T1071", "strong")]
         ordered = _order_mappings_by_importance(mappings)
         self.assertEqual(ordered[0].technique_id, "T1071")
 
     def test_single_mapping_is_returned_unchanged(self) -> None:
-        mappings = [_mapping("T1059", 0.8)]
+        mappings = [_mapping("T1059", "moderate")]
         self.assertEqual(_order_mappings_by_importance(mappings), mappings)
 
     def test_primary_sort_key_respects_sub_technique_parent(self) -> None:
         # A sub-technique like T1548.002 must inherit its parent's tier
         # rather than collapse to the default (tier 0).
-        parent_tier, _ = _primary_sort_key(_mapping("T1548", 0.8))
-        sub_tier, _ = _primary_sort_key(_mapping("T1548.002", 0.8))
+        parent_tier, _ = _primary_sort_key(_mapping("T1548", "moderate"))
+        sub_tier, _ = _primary_sort_key(_mapping("T1548.002", "moderate"))
         self.assertEqual(parent_tier, sub_tier)
+
+    def test_primary_sort_key_ranks_strength_words(self) -> None:
+        strong = _primary_sort_key(_mapping("T1059", "strong"))
+        moderate = _primary_sort_key(_mapping("T1059", "moderate"))
+        weak = _primary_sort_key(_mapping("T1059", "weak"))
+        self.assertGreater(strong, moderate)
+        self.assertGreater(moderate, weak)
 
     def test_end_to_end_primary_reflects_highest_severity_via_run(self) -> None:
         """Smoke: a log that fires both a low-severity discovery rule
@@ -362,9 +363,8 @@ class PrimaryMappingSelectionTests(unittest.TestCase):
         # Tasklist triggers T1057 (discovery, tier 1); Mimikatz-like
         # sekurlsa pattern triggers T1003 (credential dumping, tier 4).
         raw = "process=tasklist.exe && mimikatz.exe sekurlsa::logonpasswords"
-        try:
-            result = run(raw)
-        except NoMappingError:
+        result = run(raw)
+        if result.status == "no_mapping":
             self.skipTest("current rule set did not fire both techniques")
             return
 

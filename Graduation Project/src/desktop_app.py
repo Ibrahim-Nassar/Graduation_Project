@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
 from src.desktop_services import (
     PROVIDER_ORDER,
     analyze_soc_log,
-    assess_severity,
     collect_iocs,
     export_json,
     generate_analyst_brief,
@@ -79,25 +78,6 @@ _SIDEBAR = "#0B1020"
 _CARD_SOFT = _CARD
 
 
-# Semantic severity mapping — medium reads as amber (standard security tool
-# convention), low reads as green, info as muted blue-grey. We avoid using
-# the primary blue for severity so that blue stays exclusively associated
-# with interactive / primary actions.
-_SEVERITY_COLORS = {
-    "critical": _CRITICAL,
-    "high": _DANGER,
-    "medium": _WARNING,
-    "low": _ACCENT,
-    "info": _TEXT2,
-}
-
-
-def _severity_label(severity: str) -> tuple[str, str]:
-    s = severity.lower().strip()
-    color = _SEVERITY_COLORS.get(s, _TEXT2)
-    return s.upper(), color
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _status_tone(value: str) -> tuple[str, str]:
@@ -133,24 +113,23 @@ def _status_item(value: str, *, badge: bool = True) -> QTableWidgetItem:
     return item
 
 
-def _score_item(score_value: Any) -> QTableWidgetItem:
-    """Compact confidence/score cell: coloured text only, no filled cell."""
-    score = int(score_value or 0)
-    item = QTableWidgetItem(f"{score}%")
+_EVIDENCE_COLORS = {
+    "strong": _ACCENT,
+    "moderate": _TEXT,
+    "weak": _WARNING,
+}
+
+
+def _evidence_item(strength: Any) -> QTableWidgetItem:
+    """Compact evidence-strength cell: the literal word, coloured text only."""
+    label = str(strength or "").strip().lower()
+    item = QTableWidgetItem(label or "—")
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    if score >= 75:
-        color = _ACCENT
-    elif score >= 40:
-        color = _WARNING
-    elif score <= 5:
-        color = _TEXT3
-    else:
-        color = _PRIMARY
-    item.setForeground(QColor(color))
+    item.setForeground(QColor(_EVIDENCE_COLORS.get(label, _TEXT3)))
     font = item.font()
     font.setBold(True)
     item.setFont(font)
-    item.setToolTip(f"Confidence: {score}%")
+    item.setToolTip(f"Evidence strength: {label or 'n/a'}")
     return item
 
 
@@ -161,22 +140,26 @@ def _format_provider_summary(value: str) -> str:
     return text.replace(",", " |")
 
 
-def _verdict_tone(verdict: str) -> tuple[str, str]:
-    low = verdict.lower().strip()
-    if low == "malicious":
-        return "MALICIOUS", _DANGER
-    if low == "suspicious":
-        return "SUSPICIOUS", _WARNING
-    if low == "clean":
-        return "CLEAN", _ACCENT
-    return "UNKNOWN", _TEXT2
+def _assessment_label(assessment: str) -> str:
+    return assessment.replace("_", " ").strip().upper() or "INSUFFICIENT DATA"
+
+
+def _verdict_tone(assessment: str) -> tuple[str, str]:
+    low = assessment.lower().strip()
+    if low in {"corroborated_malicious", "single_source_malicious"}:
+        return _assessment_label(low), _DANGER
+    if low in {"providers_disagree", "suspicious_only"}:
+        return _assessment_label(low), _WARNING
+    if low == "no_suspicious_findings":
+        return _assessment_label(low), _ACCENT
+    return "INSUFFICIENT DATA", _TEXT2
 
 
 def _format_ioc_detail_text(row: dict[str, Any]) -> str:
     status = str(row.get("status", "unknown"))
-    verdict = str(row.get("verdict", "Unknown"))
-    verdict_confidence = int(row.get("verdict_confidence", 0) or 0)
+    assessment = str(row.get("assessment", "insufficient_data"))
     verdict_reasoning = str(row.get("verdict_reasoning", ""))
+    skip_reason = str(row.get("skip_reason", "") or "")
     providers = []
     for provider in PROVIDER_ORDER:
         providers.append(f"- {provider}: {row.get(provider, 'n/a')}")
@@ -184,17 +167,20 @@ def _format_ioc_detail_text(row: dict[str, Any]) -> str:
     errors = row.get("errors") or []
     raw_section = row.get("raw")
     raw_text = json.dumps(raw_section, indent=2, sort_keys=True) if raw_section else "N/A"
+    skipped_line = (
+        f"Skipped: not sent to providers ({skip_reason})\n"
+        if status == "skipped" else ""
+    )
     return (
         f"IOC: {row.get('ioc', '')}\n"
-        f"\n=== VERDICT ===\n"
-        f"Verdict: {verdict}\n"
-        f"Confidence: {verdict_confidence}%\n"
+        f"\n=== ASSESSMENT ===\n"
+        f"Assessment: {assessment}\n"
         f"Reasoning: {verdict_reasoning}\n"
-        f"===============\n\n"
+        f"{skipped_line}"
+        f"==================\n\n"
         f"Detected Type: {row.get('detected_type', 'unknown')}\n"
         f"Effective Type: {row.get('effective_type', 'unknown')}\n"
-        f"Aggregate Status: {status}\n"
-        f"Score: {row.get('score', 0)}\n\n"
+        f"Aggregate Status: {status}\n\n"
         "Provider Statuses:\n"
         f"{chr(10).join(providers)}\n\n"
         f"Provider Summary:\n{provider_summary}\n\n"
@@ -206,35 +192,35 @@ def _format_ioc_detail_text(row: dict[str, Any]) -> str:
 
 def _soc_banner(payload: dict[str, Any]) -> tuple[str, str, str]:
     summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
-    technique_id = str(summary.get("technique_id", "N/A"))
-    technique_name = str(summary.get("technique_name", "N/A"))
-    confidence_value = float(summary.get("confidence", 0.0) or 0.0)
+    technique_id = str(summary.get("technique_id") or "N/A")
+    technique_name = str(summary.get("technique_name") or "N/A")
+    evidence_strength = str(summary.get("evidence_strength") or "").strip().lower()
     mapping_source = str(summary.get("mapping_source", "")).strip().lower()
 
-    if technique_id == "N/A":
+    if technique_id == "N/A" or str(payload.get("status", "")).lower() == "no_mapping":
         return (
-            "No ATT&CK mapping was produced for this log.",
-            "SOC analysis completed — no ATT&CK mapping.",
+            "No reliable ATT&CK mapping for this log.",
+            "SOC analysis completed — no reliable ATT&CK mapping.",
             "info",
         )
     if mapping_source == "ml_fallback":
         return (
-            f"ML fallback predicted {technique_id} ({technique_name}) at "
-            f"{confidence_value:.0%} confidence. No deterministic rule matched — "
+            f"ML fallback predicted {technique_id} ({technique_name}); evidence strength: "
+            f"{evidence_strength or 'weak'}. No deterministic rule matched — "
             "treat as preliminary and verify manually before responding.",
             f"SOC analysis complete: {technique_id} via ML fallback.",
             "info",
         )
-    if confidence_value < 0.6:
+    if evidence_strength == "weak":
         return (
-            f"Mapped {technique_id} ({technique_name}) with low confidence ({confidence_value:.0%}). "
+            f"Mapped {technique_id} ({technique_name}) with weak evidence. "
             "Review evidence before taking response actions.",
-            f"SOC analysis complete: {technique_id} mapped with low confidence.",
+            f"SOC analysis complete: {technique_id} mapped with weak evidence.",
             "info",
         )
     return (
-        f"Rule-based mapping: {technique_id} ({technique_name}) at {confidence_value:.0%} confidence.",
-        f"SOC analysis complete: {technique_id} mapped at {confidence_value:.0%} confidence.",
+        f"Rule-based mapping: {technique_id} ({technique_name}); evidence strength: {evidence_strength or 'unknown'}.",
+        f"SOC analysis complete: {technique_id} mapped with {evidence_strength or 'unknown'} evidence.",
         "success",
     )
 
@@ -397,8 +383,8 @@ def _scan_iocs_background(
             except Exception:
                 ordered[idx] = [{
                     "ioc": iocs[idx], "detected_type": "unknown",
-                    "effective_type": "unknown", "status": "error", "score": 0,
-                    "verdict": "Unknown", "verdict_confidence": 0, "verdict_reasoning": "",
+                    "effective_type": "unknown", "status": "error", "skip_reason": "",
+                    "assessment": "insufficient_data", "verdict_reasoning": "",
                     "virustotal": "error", "abuseipdb": "error",
                     "otx": "error", "threatfox": "error",
                     "provider_summary": "scan failed", "error_count": 1,
@@ -1627,23 +1613,22 @@ class DesktopSecurityApp(QMainWindow):
         # information. We replace "Status" with a much more useful
         # "Providers" column that shows how many threat-intel providers
         # flagged the indicator (e.g. "3 / 4"), so the analyst can
-        # immediately gauge agreement at a glance. The Verdict column now
-        # carries the final malicious/suspicious/clean read on its own.
+        # immediately gauge agreement at a glance. The Assessment column
+        # carries the categorical provider-agreement read on its own.
         self.ioc_table = _table([
-            "IOC", "Verdict", "Confidence", "Type", "Providers", "Provider summary",
+            "IOC", "Assessment", "Type", "Providers", "Provider summary",
         ])
         for col, width in (
             (0, 230),
-            (1, 120),
-            (2, 110),
-            (3, 92),
-            (4, 110),
-            (5, 340),
+            (1, 200),
+            (2, 92),
+            (3, 110),
+            (4, 340),
         ):
             self.ioc_table.setColumnWidth(col, width)
         # Centre-align the header labels for numeric/badge columns so the
         # header caption sits directly over its centred cell content.
-        for center_col in (1, 2, 3, 4):
+        for center_col in (1, 2, 3):
             header_item = QTableWidgetItem(
                 self.ioc_table.horizontalHeaderItem(center_col).text()
             )
@@ -1783,7 +1768,7 @@ class DesktopSecurityApp(QMainWindow):
         result_card, rcol = _card()
         rcol.setSpacing(16)
 
-        # Strip: severity pill · technique · confidence · family
+        # Strip: technique · evidence strength · source
         # The strip lives on a lifted inner panel so the KPIs read as a
         # distinct "result header" above the analyst brief, without turning
         # into a competing dark box.
@@ -1794,36 +1779,6 @@ class DesktopSecurityApp(QMainWindow):
         strip_lay.setContentsMargins(18, 8, 18, 8)
         strip_lay.setSpacing(20)
         strip_lay.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        # The severity pill is nested in a captioned column so the badge is
-        # explicitly labelled "SEVERITY".  Without the caption the standalone
-        # coloured pill (e.g. "LOW") reads ambiguously next to the separate
-        # "(low)" confidence qualifier and analysts couldn't tell them apart.
-        sev_col = QWidget()
-        sev_col.setProperty("class", "stripCol")
-        sev_col_lay = QVBoxLayout(sev_col)
-        sev_col_lay.setContentsMargins(0, 0, 0, 0)
-        sev_col_lay.setSpacing(3)
-        sev_cap = QLabel("SEVERITY")
-        sev_cap.setProperty("class", "stripLabel")
-        sev_cap.setFixedHeight(14)
-        sev_cap.setAlignment(
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-        )
-        sev_col_lay.addWidget(sev_cap)
-
-        self.soc_severity_label = QLabel("")
-        self.soc_severity_label.setFixedWidth(0)
-        self.soc_severity_label.setVisible(False)
-        self.soc_severity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sev_col_lay.addWidget(
-            self.soc_severity_label,
-            0,
-            Qt.AlignmentFlag.AlignVCenter,
-        )
-
-        strip_lay.addWidget(sev_col, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._soc_severity_caption = sev_cap
 
         def _strip_col(label_text: str, *, stretch: int = 1) -> tuple[QWidget, QLabel]:
             col_w = QWidget()
@@ -1848,7 +1803,7 @@ class DesktopSecurityApp(QMainWindow):
             return col_w, val
 
         tech_col, self._soc_strip_technique = _strip_col("TECHNIQUE")
-        conf_col, self._soc_strip_confidence = _strip_col("CONFIDENCE")
+        conf_col, self._soc_strip_evidence = _strip_col("EVIDENCE")
         # "SOURCE" replaces the old "FAMILY" column: the family tag was
         # never populated for most logs and just showed "—", whereas the
         # mapping source ("Rule" vs "ML prediction") is the piece of
@@ -1870,12 +1825,12 @@ class DesktopSecurityApp(QMainWindow):
         # existing tests that read those labels keep working even though
         # the FAMILY column is no longer shown on screen.
         self.soc_top_technique = QLabel("Technique: —")
-        self.soc_top_confidence = QLabel("Confidence: —")
+        self.soc_top_evidence = QLabel("Evidence: —")
         self.soc_top_family = QLabel("Family: —")
         self._soc_strip_family = QLabel("—")
         for hidden in (
             self.soc_top_technique,
-            self.soc_top_confidence,
+            self.soc_top_evidence,
             self.soc_top_family,
             self._soc_strip_family,
         ):
@@ -1895,8 +1850,8 @@ class DesktopSecurityApp(QMainWindow):
         rcol.addWidget(self.soc_summary_label)
 
         # The dedicated "ANALYST BRIEF" panel has been removed: the
-        # compact strip above already shows the technique, confidence
-        # and mapping source, and the MITRE table below carries the
+        # compact strip above already shows the technique, evidence
+        # strength and mapping source, and the MITRE table below carries the
         # per-mapping rationale.  A prose brief on top of those just
         # duplicated information the analyst could already read at a
         # glance.  We still construct ``soc_analyst_brief_label`` as a
@@ -1944,10 +1899,10 @@ class DesktopSecurityApp(QMainWindow):
         # ``Source`` column makes it visible at a glance whether the
         # mapping came from a deterministic rule or the ML fallback — an
         # analyst needs to know that before acting on the technique.
-        self.soc_mitre_table = _table(["Technique", "Name", "Source", "Conf."])
-        for col, width in ((0, 96), (1, 200), (2, 110), (3, 80)):
+        self.soc_mitre_table = _table(["Technique", "Name", "Source", "Evidence"])
+        for col, width in ((0, 96), (1, 200), (2, 110), (3, 90)):
             self.soc_mitre_table.setColumnWidth(col, width)
-        # Centre-align the numeric confidence header over its centred cells.
+        # Centre-align the evidence header over its centred cells.
         conf_header = QTableWidgetItem(
             self.soc_mitre_table.horizontalHeaderItem(3).text()
         )
@@ -2257,19 +2212,26 @@ class DesktopSecurityApp(QMainWindow):
         self._populate_ioc_table(rows)
         summary = summarize_ioc_rows(rows)
 
-        # Update the compact summary strip.
+        # Update the compact summary strip.  The strip groups the six
+        # categorical assessments into its four coloured buckets; the
+        # per-row Assessment column carries the precise category.
+        malicious_count = int(summary["corroborated_malicious"]) + int(summary["single_source_malicious"])
+        suspicious_count = int(summary["suspicious_only"]) + int(summary["providers_disagree"])
         self._set_ioc_summary_strip(
             scanned=int(summary["total"]),
-            malicious=int(summary["malicious"]),
-            suspicious=int(summary["suspicious"]),
-            clean=int(summary["clean"]),
+            malicious=malicious_count,
+            suspicious=suspicious_count,
+            clean=int(summary["no_suspicious_findings"]),
             errors=int(summary["error_rows"]),
         )
 
         # Legacy single-line summary text (tests read this).
         summary_text = (
-            "Total: {total}  |  Malicious: {malicious}  |  Suspicious: {suspicious}  |  "
-            "Clean: {clean}  |  Unknown: {unknown}  |  Errors: {error_rows}".format(
+            "Total: {total}  |  Corroborated malicious: {corroborated_malicious}  |  "
+            "Single-source malicious: {single_source_malicious}  |  "
+            "Providers disagree: {providers_disagree}  |  Suspicious only: {suspicious_only}  |  "
+            "No suspicious findings: {no_suspicious_findings}  |  "
+            "Insufficient data: {insufficient_data}  |  Errors: {error_rows}".format(
                 **summary,
             )
         )
@@ -2291,7 +2253,7 @@ class DesktopSecurityApp(QMainWindow):
 
         self._set_banner(
             self.ioc_run_status,
-            f"Scan complete: {summary['total']} scanned, {summary['malicious']} malicious, {summary['suspicious']} suspicious.",
+            f"Scan complete: {summary['total']} scanned, {malicious_count} malicious, {suspicious_count} suspicious.",
             "success",
         )
         self._set_ioc_loading(False)
@@ -2375,45 +2337,42 @@ class DesktopSecurityApp(QMainWindow):
             ioc_item.setData(Qt.ItemDataRole.UserRole, row)
             self.ioc_table.setItem(idx, 0, ioc_item)
 
-            # Verdict: filled badge cell — dark tinted background with
+            # Assessment: filled badge cell — dark tinted background with
             # contrasting text so malicious/suspicious rows pop immediately.
             # Using a dark tinted bg (not saturated) keeps the table legible
             # without burning the eye on long scan sessions.
-            verdict_text = str(row.get("verdict", "Unknown"))
-            verdict_lower = verdict_text.lower().strip()
-            verdict_item = QTableWidgetItem(f"  {verdict_text.upper()}  ")
+            status_lower = str(row.get("status", "unknown")).lower().strip()
+            skipped = status_lower == "skipped"
+            skip_reason = str(row.get("skip_reason", "") or "")
+            assessment_lower = str(row.get("assessment", "insufficient_data")).lower().strip()
+            assessment_label = "SKIPPED" if skipped else _assessment_label(assessment_lower)
+            verdict_item = QTableWidgetItem(f"  {assessment_label}  ")
             verdict_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             font = verdict_item.font()
             font.setBold(True)
             verdict_item.setFont(font)
-            verdict_item.setToolTip(str(row.get("verdict_reasoning", "")))
-            if verdict_lower == "malicious":
+            verdict_item.setToolTip(
+                f"Not sent to providers: {skip_reason}" if skipped
+                else str(row.get("verdict_reasoning", ""))
+            )
+            if skipped:
+                verdict_item.setForeground(QColor(_TEXT3))
+            elif assessment_lower in {"corroborated_malicious", "single_source_malicious"}:
                 verdict_item.setBackground(QColor(100, 22, 22))
                 verdict_item.setForeground(QColor("#FCA5A5"))
-            elif verdict_lower == "suspicious":
+            elif assessment_lower in {"providers_disagree", "suspicious_only"}:
                 verdict_item.setBackground(QColor(95, 52, 8))
                 verdict_item.setForeground(QColor("#FDE68A"))
-            elif verdict_lower == "clean":
+            elif assessment_lower == "no_suspicious_findings":
                 verdict_item.setBackground(QColor(18, 68, 38))
                 verdict_item.setForeground(QColor("#86EFAC"))
             else:
                 verdict_item.setForeground(QColor(_TEXT2))
             self.ioc_table.setItem(idx, 1, verdict_item)
 
-            conf_val = int(row.get("verdict_confidence", 0) or 0)
-            conf_item = QTableWidgetItem(f"{conf_val}%")
-            conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if conf_val >= 70:
-                conf_item.setForeground(QColor(_ACCENT))
-            elif conf_val >= 40:
-                conf_item.setForeground(QColor(_WARNING))
-            else:
-                conf_item.setForeground(QColor(_TEXT3))
-            self.ioc_table.setItem(idx, 2, conf_item)
-
             type_item = QTableWidgetItem(str(row.get("effective_type", "")))
             type_item.setForeground(QColor(_TEXT2))
-            self.ioc_table.setItem(idx, 3, type_item)
+            self.ioc_table.setItem(idx, 2, type_item)
 
             # Providers column: how many providers flagged the indicator out
             # of how many responded. Gives analysts an at-a-glance sense of
@@ -2441,22 +2400,26 @@ class DesktopSecurityApp(QMainWindow):
                 f"\nAggregate status: {status_text_for_tip}"
                 if total else f"Aggregate status: {status_text_for_tip}"
             )
-            self.ioc_table.setItem(idx, 4, hits_item)
+            self.ioc_table.setItem(idx, 3, hits_item)
 
             # Provider summary: show full text in-cell and rely on the table
-            # width for clipping only when truly necessary.
-            full_prov = _format_provider_summary(str(row.get("provider_summary", "")))
+            # width for clipping only when truly necessary.  Skipped rows
+            # carry the skip reason here instead, since no provider ran.
+            if skipped:
+                full_prov = f"Not sent to providers: {skip_reason or 'not scannable'}"
+            else:
+                full_prov = _format_provider_summary(str(row.get("provider_summary", "")))
             prov_item = QTableWidgetItem(full_prov)
             prov_item.setForeground(QColor(_TEXT2))
             prov_item.setToolTip(full_prov or "No provider summary.")
-            self.ioc_table.setItem(idx, 5, prov_item)
+            self.ioc_table.setItem(idx, 4, prov_item)
 
-            # Row-level semantic tint on the non-verdict columns —
+            # Row-level semantic tint on the non-assessment columns —
             # very dark so it doesn't overwhelm, but enough to communicate
-            # that this row carries a verdict the analyst should act on.
-            if verdict_lower == "malicious":
+            # that this row carries a finding the analyst should act on.
+            if assessment_lower in {"corroborated_malicious", "single_source_malicious"}:
                 row_bg = QColor(55, 14, 14)
-            elif verdict_lower == "suspicious":
+            elif assessment_lower in {"providers_disagree", "suspicious_only"}:
                 row_bg = QColor(50, 32, 5)
             else:
                 row_bg = None
@@ -2466,7 +2429,7 @@ class DesktopSecurityApp(QMainWindow):
                 if table_item is None:
                     continue
                 table_item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignCenter if col in {1, 2, 4}
+                    Qt.AlignmentFlag.AlignCenter if col in {1, 3}
                     else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 )
                 if row_bg is not None and col != 1:
@@ -2562,7 +2525,7 @@ class DesktopSecurityApp(QMainWindow):
         self,
         *,
         technique: str,
-        confidence: str,
+        evidence: str,
         family: str,
         tone: str = "muted",
         source: str | None = None,
@@ -2577,109 +2540,43 @@ class DesktopSecurityApp(QMainWindow):
         family value so older call-sites keep rendering something.
         """
         self._soc_strip_technique.setText(technique)
-        self._soc_strip_confidence.setText(confidence)
+        self._soc_strip_evidence.setText(evidence)
         self._soc_strip_family.setText(family)
         visible_source = source if source is not None else family
         self._soc_strip_source.setText(visible_source)
         value_cls = "stripValue" if tone == "strong" else "stripValueMuted"
         for lbl in (
             self._soc_strip_technique,
-            self._soc_strip_confidence,
+            self._soc_strip_evidence,
             self._soc_strip_source,
             self._soc_strip_family,
         ):
             lbl.setProperty("class", value_cls)
             lbl.style().unpolish(lbl)
             lbl.style().polish(lbl)
-        # Apply semantic colour to the confidence value so an analyst
+        # Apply semantic colour to the evidence-strength word so an analyst
         # immediately knows whether the match is strong or marginal.
-        if tone == "strong" and confidence not in ("—", "N/A", ""):
-            try:
-                conf_clean = confidence.replace("(low)", "").replace("%", "").strip()
-                conf_pct = float(conf_clean)
-                if conf_pct >= 80:
-                    conf_color = _ACCENT
-                elif conf_pct >= 60:
-                    conf_color = _TEXT
-                else:
-                    conf_color = _WARNING
-                self._soc_strip_confidence.setStyleSheet(
-                    "color: %s; font-size: 15px; font-weight: 700;" % conf_color
-                )
-            except ValueError:
-                self._soc_strip_confidence.setStyleSheet("")
+        evidence_color = _EVIDENCE_COLORS.get(evidence.strip().lower())
+        if tone == "strong" and evidence_color is not None:
+            self._soc_strip_evidence.setStyleSheet(
+                "color: %s; font-size: 15px; font-weight: 700;" % evidence_color
+            )
         else:
-            self._soc_strip_confidence.setStyleSheet("")
+            self._soc_strip_evidence.setStyleSheet("")
 
     def _reset_soc_strip(self) -> None:
         self._set_soc_strip_values(
-            technique="—", confidence="—", family="—", tone="muted",
+            technique="—", evidence="—", family="—", tone="muted",
         )
-        self._soc_strip_confidence.setStyleSheet("")
-        self.soc_severity_label.setVisible(False)
-        self.soc_severity_label.setMinimumWidth(0)
-        self.soc_severity_label.setMaximumWidth(0)
-        # Hide the "SEVERITY" caption when the pill itself is hidden so
-        # we never show an orphan caption with no badge underneath it.
-        if hasattr(self, "_soc_severity_caption"):
-            self._soc_severity_caption.setVisible(False)
+        self._soc_strip_evidence.setStyleSheet("")
 
     def _on_soc_analysis_finished(self, payload: dict[str, Any]) -> None:
         if not payload.get("ok"):
             message = str(payload.get("error", "SOC analysis failed"))
-            reason = str(payload.get("reason", "")).strip().lower()
-            partial_result = payload.get("partial_result", {})
-            if reason == "no_mapping" and isinstance(partial_result, dict):
-                self.last_soc_payload = payload
-                entity_count = int(partial_result.get("audit", {}).get("entity_count", 0) or 0)
-                self._populate_soc_sections(payload)
-                brief = str(payload.get("analyst_brief", ""))
-                if not brief:
-                    brief = generate_analyst_brief(payload)
-                self.soc_analyst_brief_label.setText(brief)
-                self.soc_severity_label.setText("INFO")
-                self.soc_severity_label.setProperty("class", "severityInfo")
-                self.soc_severity_label.style().unpolish(self.soc_severity_label)
-                self.soc_severity_label.style().polish(self.soc_severity_label)
-                self.soc_severity_label.setMinimumWidth(72)
-                self.soc_severity_label.setMaximumWidth(96)
-                self.soc_severity_label.setFixedHeight(26)
-                self.soc_severity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.soc_severity_label.setVisible(True)
-                if hasattr(self, "_soc_severity_caption"):
-                    self._soc_severity_caption.setVisible(True)
-                self.soc_top_technique.setText("Technique: Not mapped")
-                self.soc_top_confidence.setText("Confidence: N/A")
-                self.soc_top_family.setText("Family: —")
-                self._set_soc_strip_values(
-                    technique="Not mapped",
-                    confidence="N/A",
-                    family="—",
-                    tone="muted",
-                )
-                if entity_count > 0:
-                    self.soc_summary_label.setText(
-                        f"No ATT&CK mapping produced. {entity_count} entities extracted — "
-                        "add more log context and try again."
-                    )
-                else:
-                    self.soc_summary_label.setText(
-                        "No ATT&CK mapping produced and no entities extracted. "
-                        "Check log format and completeness."
-                    )
-                self.soc_section_entities.set_expanded(True)
-                self.soc_section_mitre.set_expanded(False)
-                self._update_mitre_section_visibility(payload)
-                self._set_banner(
-                    self.soc_run_status,
-                    "SOC analysis completed — no ATT&CK mapping.",
-                    "info",
-                )
-            else:
-                self.last_soc_payload = payload
-                QMessageBox.warning(self, "Analysis Failed", message)
-                self.soc_summary_label.setText(message)
-                self._set_banner(self.soc_run_status, f"SOC analysis failed: {message}", "danger")
+            self.last_soc_payload = payload
+            QMessageBox.warning(self, "Analysis Failed", message)
+            self.soc_summary_label.setText(message)
+            self._set_banner(self.soc_run_status, f"SOC analysis failed: {message}", "danger")
             self._set_soc_loading(False)
             return
 
@@ -2691,34 +2588,50 @@ class DesktopSecurityApp(QMainWindow):
         self.soc_analyst_brief_label.setText(brief)
 
         summary = payload.get("summary", {})
-        confidence_value = float(summary.get("confidence", 0.0) or 0.0)
+        if not isinstance(summary, dict):
+            summary = {}
         summary_text, banner_text, banner_tone = _soc_banner(payload)
+
+        if str(payload.get("status", "")).strip().lower() == "no_mapping":
+            # A completed analysis with no reliable mapping — rendered as a
+            # normal outcome, not an error state.
+            result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+            audit = result.get("audit", {}) if isinstance(result.get("audit"), dict) else {}
+            entity_count = int(audit.get("entity_count", len(result.get("entities", []) or [])) or 0)
+            self.soc_top_technique.setText("Technique: No reliable ATT&CK mapping")
+            self.soc_top_evidence.setText("Evidence: N/A")
+            self.soc_top_family.setText("Family: —")
+            self._set_soc_strip_values(
+                technique="No reliable ATT&CK mapping",
+                evidence="N/A",
+                family="—",
+                tone="muted",
+            )
+            if entity_count > 0:
+                self.soc_summary_label.setText(
+                    f"No reliable ATT&CK mapping. {entity_count} entities extracted — "
+                    "add more log context and try again."
+                )
+            else:
+                self.soc_summary_label.setText(
+                    "No reliable ATT&CK mapping and no entities extracted. "
+                    "Check log format and completeness."
+                )
+            self.soc_section_entities.set_expanded(True)
+            self.soc_section_mitre.set_expanded(False)
+            self._update_mitre_section_visibility(payload)
+            self._set_banner(self.soc_run_status, banner_text, banner_tone)
+            self._set_soc_loading(False)
+            return
+
         self.soc_summary_label.setText(summary_text)
 
-        severity = assess_severity(payload)
-        sev_text, _ = _severity_label(severity)
-        self.soc_severity_label.setText(sev_text)
-        self.soc_severity_label.setProperty("class", f"severity{severity.capitalize()}")
-        self.soc_severity_label.style().unpolish(self.soc_severity_label)
-        self.soc_severity_label.style().polish(self.soc_severity_label)
-        self.soc_severity_label.setMinimumWidth(72)
-        self.soc_severity_label.setMaximumWidth(96)
-        self.soc_severity_label.setFixedHeight(26)
-        self.soc_severity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.soc_severity_label.setVisible(True)
-        if hasattr(self, "_soc_severity_caption"):
-            self._soc_severity_caption.setVisible(True)
-
-        technique_id = str(summary.get("technique_id", "N/A"))
-        technique_name = str(summary.get("technique_name", "N/A"))
+        technique_id = str(summary.get("technique_id") or "N/A")
+        technique_name = str(summary.get("technique_name") or "N/A")
         family = str(summary.get("family", "—")) or "—"
         self.soc_top_technique.setText(f"Technique: {technique_id}  —  {technique_name}")
-        # Confidence text intentionally omits the "(low)" suffix: the
-        # severity pill to the left already communicates the risk tier,
-        # and surfacing both caused analysts to read the UI as having
-        # two independent "low" badges for the same mapping.
-        conf_label = f"{confidence_value:.0%}"
-        self.soc_top_confidence.setText(f"Confidence: {conf_label}")
+        evidence_label = str(summary.get("evidence_strength") or "unknown").strip().lower()
+        self.soc_top_evidence.setText(f"Evidence: {evidence_label}")
         self.soc_top_family.setText(f"Family: {family}")
 
         technique_display = (
@@ -2737,7 +2650,7 @@ class DesktopSecurityApp(QMainWindow):
             source_display = "—"
         self._set_soc_strip_values(
             technique=technique_display,
-            confidence=conf_label,
+            evidence=evidence_label,
             family=family,
             source=source_display,
             tone="strong",
@@ -2765,7 +2678,7 @@ class DesktopSecurityApp(QMainWindow):
         """Show the MITRE table only when there is more than one mapping.
 
         When the pipeline emits a single mapping, the summary strip at the
-        top of the SOC page (TECHNIQUE / CONFIDENCE / SOURCE) already
+        top of the SOC page (TECHNIQUE / EVIDENCE / SOURCE) already
         carries every field the table would show, so the second panel is
         pure redundancy and was raised as noise in user feedback.  With
         two or more mappings the table becomes the only place that lists
@@ -2857,7 +2770,7 @@ class DesktopSecurityApp(QMainWindow):
             self.soc_mitre_table.setItem(r, 2, source_item)
 
             self.soc_mitre_table.setItem(
-                r, 3, _score_item(int(float(mapping.get("confidence", 0)) * 100)),
+                r, 3, _evidence_item(mapping.get("evidence_strength")),
             )
 
     # ── settings ──────────────────────────────────────────────────────────

@@ -182,10 +182,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "detected_type": "ip",
                 "effective_type": "ip",
                 "status": "clean",
-                "score": 10,
-                "verdict": "Clean",
-                "verdict_confidence": 90,
-                "verdict_reasoning": "no threats",
+                "skip_reason": "",
+                "assessment": "no_suspicious_findings",
+                "verdict_reasoning": "virustotal: clean; abuseipdb: clean; otx: clean.",
                 "virustotal": "clean",
                 "abuseipdb": "clean",
                 "otx": "clean",
@@ -200,10 +199,9 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "detected_type": "domain",
                 "effective_type": "domain",
                 "status": "suspicious",
-                "score": 65,
-                "verdict": "Suspicious",
-                "verdict_confidence": 70,
-                "verdict_reasoning": "flagged by multiple providers",
+                "skip_reason": "",
+                "assessment": "suspicious_only",
+                "verdict_reasoning": "virustotal: suspicious; otx: suspicious; threatfox: suspicious.",
                 "virustotal": "suspicious",
                 "abuseipdb": "not_supported",
                 "otx": "suspicious",
@@ -213,18 +211,54 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "errors": ["virustotal: timeout"],
                 "raw": {},
             },
+            {
+                "ioc": "10.0.0.5",
+                "detected_type": "ip",
+                "effective_type": "ip",
+                "status": "skipped",
+                "skip_reason": "private_or_reserved_ip",
+                "assessment": "insufficient_data",
+                "verdict_reasoning": "No provider returned a usable result.",
+                "virustotal": "n/a",
+                "abuseipdb": "n/a",
+                "otx": "n/a",
+                "threatfox": "n/a",
+                "provider_summary": "virustotal:n/a, abuseipdb:n/a, otx:n/a, threatfox:n/a",
+                "error_count": 0,
+                "errors": [],
+                "raw": {},
+            },
         ]
         self.window._on_ioc_scan_finished(rows)
-        self.assertEqual(self.window.ioc_table.rowCount(), 2)
-        self.assertIn("Total: 2", self.window.ioc_summary_label.text())
-        self.assertIn("Malicious: 0", self.window.ioc_summary_label.text())
-        # Column 5 is now Provider Summary
-        summary_text = self.window.ioc_table.item(1, 5).text()
+        self.assertEqual(self.window.ioc_table.rowCount(), 3)
+        self.assertIn("Total: 3", self.window.ioc_summary_label.text())
+        self.assertIn("Corroborated malicious: 0", self.window.ioc_summary_label.text())
+        self.assertIn("Suspicious only: 1", self.window.ioc_summary_label.text())
+        self.assertIn("Insufficient data: 1", self.window.ioc_summary_label.text())
+        headers = [
+            self.window.ioc_table.horizontalHeaderItem(i).text().lower()
+            for i in range(self.window.ioc_table.columnCount())
+        ]
+        self.assertIn("assessment", headers)
+        self.assertNotIn("confidence", headers)
+        self.assertNotIn("verdict", headers)
+        self.assertIn("SUSPICIOUS ONLY", self.window.ioc_table.item(1, 1).text())
+        # Column 4 is now Provider Summary
+        summary_text = self.window.ioc_table.item(1, 4).text()
         self.assertIn("virustotal:suspicious", summary_text)
+        # Skipped rows render the skip reason instead of provider output.
+        self.assertIn("SKIPPED", self.window.ioc_table.item(2, 1).text())
+        self.assertIn("private_or_reserved_ip", self.window.ioc_table.item(2, 4).text())
         self.window.ioc_table.selectRow(1)
         self.window._update_ioc_detail_panel()
-        self.assertIn("IOC: evil.example.com", self.window.ioc_detail_text.toPlainText())
-        self.assertIn("Provider Statuses:", self.window.ioc_detail_text.toPlainText())
+        detail = self.window.ioc_detail_text.toPlainText()
+        self.assertIn("IOC: evil.example.com", detail)
+        self.assertIn("Assessment: suspicious_only", detail)
+        self.assertNotIn("Confidence:", detail)
+        self.assertIn("Provider Statuses:", detail)
+        self.window.ioc_table.selectRow(2)
+        self.window._update_ioc_detail_panel()
+        self.assertIn("private_or_reserved_ip", self.window.ioc_detail_text.toPlainText())
 
     def test_second_finish_render_replaces_previous_rows(self) -> None:
         first_rows = [
@@ -233,9 +267,8 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "detected_type": "ip",
                 "effective_type": "ip",
                 "status": "clean",
-                "score": 10,
-                "verdict": "Clean",
-                "verdict_confidence": 85,
+                "skip_reason": "",
+                "assessment": "no_suspicious_findings",
                 "verdict_reasoning": "",
                 "virustotal": "clean",
                 "abuseipdb": "clean",
@@ -253,9 +286,8 @@ class IocFinishHandlerTests(_BaseUiGlueTest):
                 "detected_type": "domain",
                 "effective_type": "domain",
                 "status": "suspicious",
-                "score": 65,
-                "verdict": "Suspicious",
-                "verdict_confidence": 70,
+                "skip_reason": "",
+                "assessment": "suspicious_only",
                 "verdict_reasoning": "",
                 "virustotal": "suspicious",
                 "abuseipdb": "not_supported",
@@ -320,15 +352,17 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
     def test_finish_handler_populates_soc_sections(self) -> None:
         payload = {
             "ok": True,
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1110",
                 "technique_name": "Brute Force",
-                "confidence": 0.88,
+                "evidence_strength": "strong",
                 "mapping_source": "rule",
                 "entity_count": 2,
                 "family": "Windows",
             },
             "result": {
+                "status": "mapped",
                 "entities": [
                     {"type": "ipv4", "value": "8.8.8.8", "evidence_ref": "8.8.8.8"},
                     {"type": "domain", "value": "evil.example.com", "evidence_ref": "evil.example.com"},
@@ -337,7 +371,7 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
                     {
                         "technique_id": "T1110",
                         "technique_name": "Brute Force",
-                        "confidence": 0.88,
+                        "evidence_strength": "strong",
                         "rationale": "Multiple failed logins",
                         "evidence_refs": ["failed login"],
                     }
@@ -350,26 +384,38 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
         self.assertEqual(self.window.soc_mitre_table.rowCount(), 1)
         self.assertIn("T1110", self.window.soc_top_technique.text())
         self.assertIn("Brute Force", self.window.soc_top_technique.text())
-        self.assertIn("88%", self.window.soc_top_confidence.text())
+        self.assertEqual(self.window.soc_top_evidence.text().strip(), "Evidence: strong")
+        self.assertFalse(hasattr(self.window, "soc_top_confidence"))
+        self.assertFalse(hasattr(self.window, "soc_severity_label"))
         self.assertIn("Windows", self.window.soc_top_family.text())
+        headers = [
+            self.window.soc_mitre_table.horizontalHeaderItem(i).text().lower()
+            for i in range(self.window.soc_mitre_table.columnCount())
+        ]
+        self.assertIn("evidence", headers)
+        self.assertNotIn("conf.", headers)
+        evidence_cell = self.window.soc_mitre_table.item(0, headers.index("evidence"))
+        self.assertEqual(evidence_cell.text(), "strong")
 
-    def test_low_confidence_mapping_shows_cautionary_label(self) -> None:
+    def test_weak_evidence_mapping_shows_cautionary_label(self) -> None:
         payload = {
             "ok": True,
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1110",
                 "technique_name": "Brute Force",
-                "confidence": 0.41,
+                "evidence_strength": "weak",
                 "mapping_source": "rule",
                 "entity_count": 1,
             },
             "result": {
+                "status": "mapped",
                 "entities": [{"type": "ipv4", "value": "8.8.8.8", "evidence_ref": "8.8.8.8"}],
                 "attack_mapping": [
                     {
                         "technique_id": "T1110",
                         "technique_name": "Brute Force",
-                        "confidence": 0.41,
+                        "evidence_strength": "weak",
                         "rationale": "Partial failed auth evidence",
                         "evidence_refs": ["authentication failed"],
                     }
@@ -378,25 +424,15 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
             },
         }
         self.window._on_soc_analysis_finished(payload)
-        self.assertIn("low confidence", self.window.soc_summary_label.text().lower())
-        # The "(low)" suffix was removed from the confidence strip value:
-        # a "LOW" severity pill on the left already communicates the risk
-        # tier, and duplicating the cue in the confidence column caused
-        # analysts to read the UI as having two unrelated "low" badges.
-        # The severity pill is now the single source of risk truth.
+        self.assertIn("weak evidence", self.window.soc_summary_label.text().lower())
+        self.assertNotIn("%", self.window.soc_summary_label.text())
+        # The strip renders the evidence strength as the literal word;
+        # there is no numeric confidence and no severity pill any more.
         self.assertEqual(
-            self.window.soc_top_confidence.text().strip(),
-            "Confidence: 41%",
+            self.window.soc_top_evidence.text().strip(),
+            "Evidence: weak",
         )
-        # The severity pill itself carries the "low" cue.  Tests run
-        # without showing the widget so we can't rely on isVisible();
-        # check the rendered badge text and the CSS class that drives
-        # its colouring instead.
-        self.assertEqual(self.window.soc_severity_label.text(), "LOW")
-        self.assertEqual(
-            self.window.soc_severity_label.property("class"),
-            "severityLow",
-        )
+        self.assertEqual(self.window._soc_strip_evidence.text(), "weak")
 
     def test_ml_fallback_mapping_is_labelled_in_mitre_table(self) -> None:
         # Regression guard: when the pipeline produced an ML-fallback
@@ -404,14 +440,16 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
         # make that visible so analysts don't mistake it for a rule match.
         payload = {
             "ok": True,
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1047",
                 "technique_name": "Windows Management Instrumentation",
-                "confidence": 0.45,
+                "evidence_strength": "weak",
                 "mapping_source": "ml_fallback",
                 "entity_count": 1,
             },
             "result": {
+                "status": "mapped",
                 "entities": [
                     {"type": "process", "value": "powershell.exe", "evidence_ref": "powershell.exe"},
                 ],
@@ -419,7 +457,7 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
                     {
                         "technique_id": "T1047",
                         "technique_name": "Windows Management Instrumentation",
-                        "confidence": 0.45,
+                        "evidence_strength": "weak",
                         "rationale": (
                             "ML fallback prediction - no deterministic ATT&CK "
                             "rule matched. Key terms the model keyed on: "
@@ -464,25 +502,38 @@ class SocFinishHandlerTests(_BaseUiGlueTest):
             f"expected ML-source prefix on brief, got: {brief!r}",
         )
 
-    def test_no_mapping_with_partial_extraction_is_explained(self) -> None:
+    def test_no_mapping_is_rendered_as_completed_analysis_not_error(self) -> None:
         payload = {
-            "ok": False,
-            "error": "No ATT&CK mapping could be produced for this log.",
-            "reason": "no_mapping",
-            "partial_result": {
+            "ok": True,
+            "status": "no_mapping",
+            "summary": {
+                "technique_id": None,
+                "technique_name": None,
+                "mapping_source": "none",
+                "entity_count": 2,
+            },
+            "result": {
+                "status": "no_mapping",
                 "entities": [
                     {"type": "username", "value": "alice", "evidence_ref": "alice"},
                     {"type": "ipv4", "value": "10.0.0.5", "evidence_ref": "10.0.0.5"},
                 ],
                 "attack_mapping": [],
-                "epc": {},
+                "epc": None,
                 "audit": {"mapping_source": "none", "entity_count": 2, "mapping_count": 0},
             },
         }
-        self.window._on_soc_analysis_finished(payload)
-        self.assertIn("no att&ck mapping", self.window.soc_summary_label.text().lower())
+        with patch("src.desktop_app.QMessageBox.warning") as warning:
+            self.window._on_soc_analysis_finished(payload)
+        warning.assert_not_called()
+        self.assertIn("no reliable att&ck mapping", self.window.soc_summary_label.text().lower())
+        self.assertIn("No reliable ATT&CK mapping", self.window.soc_top_technique.text())
+        self.assertEqual(self.window.soc_top_evidence.text().strip(), "Evidence: N/A")
+        self.assertIn("no reliable att&ck mapping", self.window.soc_run_status.text().lower())
+        self.assertNotIn("failed", self.window.soc_run_status.text().lower())
         self.assertEqual(self.window.soc_entities_table.rowCount(), 2)
         self.assertEqual(self.window.soc_mitre_table.rowCount(), 0)
+        self.assertIs(self.window.last_soc_payload, payload)
 
 
 class AnalystBriefUiTests(_BaseUiGlueTest):
@@ -493,26 +544,28 @@ class AnalystBriefUiTests(_BaseUiGlueTest):
     def test_mapped_result_populates_brief_with_technique(self) -> None:
         payload = {
             "ok": True,
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1059",
                 "technique_name": "Command and Scripting Interpreter",
-                "confidence": 0.9,
+                "evidence_strength": "strong",
                 "mapping_source": "rule",
                 "entity_count": 1,
             },
             "analyst_brief": (
                 "Log analysis identified activity involving process \u2018powershell.exe\u2019. "
-                "Mapped to T1059 (Command and Scripting Interpreter) at 90% confidence. "
+                "Mapped to T1059 (Command and Scripting Interpreter) with strong evidence. "
                 "Primary evidence: PowerShell executed with encoded command switch. "
-                "Recommended first action: Isolate the host."
+                "Recommended first action: Decode the encoded command."
             ),
             "result": {
+                "status": "mapped",
                 "entities": [{"type": "process", "value": "powershell.exe", "evidence_ref": "powershell"}],
                 "attack_mapping": [
                     {
                         "technique_id": "T1059",
                         "technique_name": "Command and Scripting Interpreter",
-                        "confidence": 0.9,
+                        "evidence_strength": "strong",
                         "rationale": "PowerShell executed with encoded command switch.",
                         "evidence_refs": ["powershell", "-enc"],
                     }
@@ -527,22 +580,28 @@ class AnalystBriefUiTests(_BaseUiGlueTest):
 
     def test_no_mapping_result_populates_brief_without_technique(self) -> None:
         payload = {
-            "ok": False,
-            "error": "No ATT&CK mapping could be produced for this log.",
-            "reason": "no_mapping",
+            "ok": True,
+            "status": "no_mapping",
+            "summary": {
+                "technique_id": None,
+                "technique_name": None,
+                "mapping_source": "none",
+                "entity_count": 2,
+            },
             "analyst_brief": (
                 "Analysis completed but no MITRE ATT&CK mapping was produced for this log. "
                 "Extracted entities: username \u2018alice\u2019, ipv4 \u201810.0.0.5\u2019. "
                 "Recommended action: review extracted fields for missing context,"
                 " add correlated log lines, and re-analyze."
             ),
-            "partial_result": {
+            "result": {
+                "status": "no_mapping",
                 "entities": [
                     {"type": "username", "value": "alice", "evidence_ref": "alice"},
                     {"type": "ipv4", "value": "10.0.0.5", "evidence_ref": "10.0.0.5"},
                 ],
                 "attack_mapping": [],
-                "epc": {},
+                "epc": None,
                 "audit": {"mapping_source": "none", "entity_count": 2, "mapping_count": 0},
             },
         }
@@ -553,13 +612,19 @@ class AnalystBriefUiTests(_BaseUiGlueTest):
 
     def test_brief_regenerated_when_not_in_payload(self) -> None:
         payload = {
-            "ok": False,
-            "error": "No ATT&CK mapping could be produced for this log.",
-            "reason": "no_mapping",
-            "partial_result": {
+            "ok": True,
+            "status": "no_mapping",
+            "summary": {
+                "technique_id": None,
+                "technique_name": None,
+                "mapping_source": "none",
+                "entity_count": 0,
+            },
+            "result": {
+                "status": "no_mapping",
                 "entities": [],
                 "attack_mapping": [],
-                "epc": {},
+                "epc": None,
                 "audit": {"mapping_source": "none", "entity_count": 0, "mapping_count": 0},
             },
         }

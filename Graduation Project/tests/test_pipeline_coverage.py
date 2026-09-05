@@ -361,30 +361,26 @@ class WindowsMappingTests(unittest.TestCase):
 
 class RegressionSafetyTests(unittest.TestCase):
     def test_malformed_fortinet_is_still_rejected_gracefully(self) -> None:
-        from src.pipeline import NoMappingError
         raw = 'date=2026-04-18 time=03:15:00 devname= srcip=10.10.25.10 dstip=198.51.100.1 bytes=ERR'
-        try:
-            result = _run(raw)
-        except NoMappingError:
-            return  # acceptable: explicit no-mapping signal
-        # If no exception, then *some* mapping must have fired; we accept that
-        # outcome for forward compatibility but we must not crash.
+        result = _run(raw)
+        # Either an explicit no-mapping status or *some* mapping is
+        # acceptable for forward compatibility; we must not crash.
         self.assertIsInstance(result, dict)
+        self.assertIn(result["status"], {"mapped", "no_mapping"})
 
     def test_benign_firewall_dns_does_not_fire_any_rule(self) -> None:
-        from src.pipeline import NoMappingError
         raw = (
             'date=2026-04-18 time=03:00:01 devname="FW-CORE-01" '
             'devid="FGT60E-SEC-99" type="traffic" srcip=10.10.25.10 '
             'srcport=49000 dstip=198.51.100.20 dstport=53 proto=17 '
             'action="accept" service="DNS" sentbyte=64 rcvdbyte=128'
         )
-        try:
-            payload = _run(raw)
-        except NoMappingError:
+        payload = _run(raw)
+        if payload["status"] == "no_mapping":
             # Explicit no-mapping is the documented benign path.  A real
             # ValidationError would indicate a pipeline bug, not a benign
-            # unmapped input, and MUST not be swallowed here.
+            # unmapped input, and would have raised above.
+            self.assertEqual(payload["attack_mapping"], [])
             return
         # If the pipeline produced anything, it must not be a false exfiltration
         # or beaconing signal on obviously benign DNS.

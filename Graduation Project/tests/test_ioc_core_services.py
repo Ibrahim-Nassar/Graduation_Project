@@ -324,13 +324,12 @@ class IocExportTests(unittest.TestCase):
         ]
         expected_columns = [
             "ioc",
-            "verdict",
-            "verdict_confidence",
+            "assessment",
             "verdict_reasoning",
             "detected_type",
             "effective_type",
             "status",
-            "score",
+            "skip_reason",
             "virustotal",
             "abuseipdb",
             "otx",
@@ -347,6 +346,8 @@ class IocExportTests(unittest.TestCase):
                 written_rows = list(reader)
 
         self.assertEqual(reader.fieldnames, expected_columns)
+        self.assertNotIn("verdict_confidence", reader.fieldnames)
+        self.assertNotIn("score", reader.fieldnames)
         self.assertEqual(len(written_rows), 2)
         self.assertEqual(written_rows[0]["ioc"], "8.8.8.8")
         self.assertEqual(written_rows[1]["ioc"], "example.com")

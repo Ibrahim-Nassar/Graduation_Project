@@ -11,7 +11,6 @@ from src.ioc_enrichment import (
     IOC_TYPE_IP,
     IOC_TYPE_URL,
     IOC_TYPE_UNKNOWN,
-    _aggregate_score,
     _aggregate_status,
     _classify_http_error,
     abuseipdb_lookup,
@@ -49,12 +48,19 @@ class ProviderLookupHandlingTests(unittest.TestCase):
         self.assertEqual(result["status"], "n/a")
         self.assertIn("missing API key", result.get("error", ""))
 
-    def test_vt_success_maps_to_malicious(self) -> None:
-        payload = {"data": {"attributes": {"last_analysis_stats": {"malicious": 2, "suspicious": 0, "harmless": 0}}}}
+    def test_vt_three_or_more_malicious_vendors_maps_to_malicious(self) -> None:
+        payload = {"data": {"attributes": {"last_analysis_stats": {"malicious": 3, "suspicious": 0, "harmless": 0}}}}
         with patch("src.ioc_enrichment._http_get_json", return_value=payload):
             result = vt_lookup("8.8.8.8", IOC_TYPE_IP, "k")
         self.assertEqual(result["status"], "malicious")
-        self.assertGreaterEqual(int(result["score"]), 80)
+        self.assertEqual(result["details"]["vendor_total"], 3)
+
+    def test_vt_one_or_two_malicious_vendors_maps_to_suspicious(self) -> None:
+        payload = {"data": {"attributes": {"last_analysis_stats": {"malicious": 2, "suspicious": 0, "harmless": 0}}}}
+        with patch("src.ioc_enrichment._http_get_json", return_value=payload):
+            result = vt_lookup("8.8.8.8", IOC_TYPE_IP, "k")
+        self.assertEqual(result["status"], "suspicious")
+        self.assertEqual(result["details"]["vendor_total"], 2)
 
     def test_vt_empty_payload_maps_to_unknown(self) -> None:
         with patch("src.ioc_enrichment._http_get_json", return_value={}):
@@ -247,97 +253,93 @@ class AggregationLogicTests(unittest.TestCase):
         )
         self.assertEqual(result, "unknown")
 
-    def test_aggregate_score_all_clean(self) -> None:
-        score = _aggregate_score({"virustotal": {"status": "clean"}, "otx": {"status": "clean"}})
-        self.assertEqual(score, 10)
-
-    def test_aggregate_score_mixed_clean_and_malicious(self) -> None:
-        score = _aggregate_score({"virustotal": {"status": "clean"}, "otx": {"status": "malicious"}})
-        self.assertEqual(score, 50)
-
-    def test_aggregate_score_unknown_only(self) -> None:
-        score = _aggregate_score({"virustotal": {"status": "unknown"}})
-        self.assertEqual(score, 0)
-
-    def test_aggregate_score_error_is_handled(self) -> None:
-        score = _aggregate_score({"virustotal": {"status": "error"}})
-        self.assertEqual(score, 0)
-
 
 class VerdictComputationTests(unittest.TestCase):
-    def test_all_malicious_returns_malicious_with_high_confidence(self) -> None:
+    def test_all_malicious_returns_corroborated_malicious(self) -> None:
         results = {
             "virustotal": {"status": "malicious"},
             "otx": {"status": "malicious"},
             "threatfox": {"status": "malicious"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Malicious")
-        self.assertGreaterEqual(verdict["confidence"], 80)
+        self.assertEqual(verdict["assessment"], "corroborated_malicious")
         self.assertIn("malicious", verdict["reasoning"].lower())
+        self.assertEqual(sorted(verdict["responding"]), ["otx", "threatfox", "virustotal"])
 
-    def test_all_clean_returns_clean(self) -> None:
+    def test_all_clean_returns_no_suspicious_findings(self) -> None:
         results = {
             "virustotal": {"status": "clean"},
             "otx": {"status": "clean"},
             "abuseipdb": {"status": "clean"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Clean")
-        self.assertGreaterEqual(verdict["confidence"], 50)
+        self.assertEqual(verdict["assessment"], "no_suspicious_findings")
+        self.assertEqual(sorted(verdict["clean"]), ["abuseipdb", "otx", "virustotal"])
 
-    def test_mixed_suspicious_returns_suspicious(self) -> None:
+    def test_suspicious_with_clean_is_providers_disagree(self) -> None:
         results = {
             "virustotal": {"status": "clean"},
             "otx": {"status": "suspicious"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Suspicious")
+        self.assertEqual(verdict["assessment"], "providers_disagree")
 
-    def test_single_malicious_overrides_clean(self) -> None:
+    def test_single_malicious_with_clean_is_providers_disagree_not_malicious(self) -> None:
         results = {
             "virustotal": {"status": "malicious"},
             "otx": {"status": "clean"},
             "threatfox": {"status": "clean"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Malicious")
+        self.assertEqual(verdict["assessment"], "providers_disagree")
+        self.assertEqual(verdict["malicious"], ["virustotal"])
 
-    def test_empty_results_returns_unknown(self) -> None:
+    def test_empty_results_returns_insufficient_data(self) -> None:
         verdict = compute_verdict({})
-        self.assertEqual(verdict["verdict"], "Unknown")
-        self.assertEqual(verdict["confidence"], 0)
+        self.assertEqual(verdict["assessment"], "insufficient_data")
+        self.assertEqual(verdict["responding"], [])
 
-    def test_all_error_returns_unknown(self) -> None:
+    def test_all_error_returns_insufficient_data(self) -> None:
         results = {
             "virustotal": {"status": "error"},
             "otx": {"status": "n/a"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Unknown")
+        self.assertEqual(verdict["assessment"], "insufficient_data")
 
-    def test_verdict_keys_present(self) -> None:
+    def test_verdict_keys_present_and_no_confidence(self) -> None:
         verdict = compute_verdict({"virustotal": {"status": "clean"}})
-        self.assertIn("verdict", verdict)
-        self.assertIn("confidence", verdict)
-        self.assertIn("reasoning", verdict)
+        for key in ("assessment", "reasoning", "responding", "malicious", "suspicious", "clean"):
+            self.assertIn(key, verdict)
+        self.assertNotIn("verdict", verdict)
+        self.assertNotIn("confidence", verdict)
 
-    def test_all_auth_error_returns_unknown(self) -> None:
+    def test_all_auth_error_returns_insufficient_data(self) -> None:
         results = {
             "virustotal": {"status": "auth_error"},
             "otx": {"status": "auth_error"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Unknown")
-        self.assertEqual(verdict["confidence"], 0)
+        self.assertEqual(verdict["assessment"], "insufficient_data")
 
-    def test_auth_error_mixed_with_clean_returns_clean(self) -> None:
+    def test_auth_error_mixed_with_clean_returns_no_suspicious_findings(self) -> None:
         results = {
             "virustotal": {"status": "auth_error"},
             "otx": {"status": "clean"},
         }
         verdict = compute_verdict(results)
-        self.assertEqual(verdict["verdict"], "Clean")
+        self.assertEqual(verdict["assessment"], "no_suspicious_findings")
+        self.assertEqual(verdict["responding"], ["otx"])
+
+    def test_reasoning_includes_virustotal_vendor_ratio(self) -> None:
+        results = {
+            "virustotal": {
+                "status": "malicious",
+                "details": {"malicious": 5, "suspicious": 0, "harmless": 60, "undetected": 5, "vendor_total": 70},
+            },
+        }
+        verdict = compute_verdict(results)
+        self.assertIn("5/70", verdict["reasoning"])
 
 
 class AuthErrorClassificationTests(unittest.TestCase):

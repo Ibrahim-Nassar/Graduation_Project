@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import ipaddress
 import json
 import os
 import re
@@ -12,36 +11,6 @@ from typing import Any, Iterable
 
 from src.contracts import AttackMapping, EPC, Entity, Event, Result
 from src.model import predict_attack
-
-
-class NoMappingError(Exception):
-    """Raised when the pipeline completed successfully but no ATT&CK rule
-    matched and no ML-fallback suggestion was produced.
-
-    This is an *expected* outcome for benign traffic or inputs the rule
-    table cannot currently express.  It is intentionally distinct from a
-    :class:`pydantic.ValidationError`, which signals a real internal
-    correctness bug (e.g. a rule produced a malformed AttackMapping).  The
-    caller can catch this exception to render the "no mapping" state
-    without swallowing genuine internal failures.
-
-    The attached attributes let the UI render what context it *did* have:
-    entities extracted, normalized event, and optional IOC enrichment.
-    """
-
-    def __init__(
-        self,
-        *,
-        entities: list[Entity] | None = None,
-        normalized_event: dict[str, Any] | None = None,
-        ioc_enrichment: list[dict[str, Any]] | None = None,
-    ) -> None:
-        super().__init__("no ATT&CK mapping produced")
-        self.entities: list[Entity] = list(entities or [])
-        self.normalized_event: dict[str, Any] = dict(normalized_event or {})
-        self.ioc_enrichment: list[dict[str, Any]] | None = (
-            list(ioc_enrichment) if ioc_enrichment is not None else None
-        )
 
 IPV4_RE = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
@@ -407,13 +376,6 @@ def _parse_structured_payload(raw_log: str) -> dict[str, Any]:
             value = str(int(value)) if value.is_integer() else str(value)
         standardized[std_key] = value if isinstance(value, (int, float)) else str(value)
     return standardized
-
-
-def _is_rfc1918(ip_text: str) -> bool:
-    try:
-        return ipaddress.IPv4Address(ip_text).is_private
-    except (ipaddress.AddressValueError, ValueError):
-        return False
 
 
 def _as_float(value: Any) -> float | None:
@@ -908,7 +870,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1059",
                 technique_name="Command and Scripting Interpreter",
-                confidence=0.9 if has_encoded_switch else 0.82,
+                evidence_strength="strong" if has_encoded_switch else "moderate",
                 rationale=rationale,
                 evidence_refs=evidence_refs,
             )
@@ -920,7 +882,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1071",
                 technique_name="Application Layer Protocol",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="Repeated DNS lookups to randomized subdomains indicate tunneling behavior.",
                 evidence_refs=evidence or [domains[0]],
             )
@@ -966,7 +928,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1110",
                 technique_name="Brute Force",
-                confidence=0.88,
+                evidence_strength="strong",
                 rationale="Multiple failed authentication attempts observed in a short sequence.",
                 evidence_refs=evidence_refs,
             )
@@ -982,7 +944,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1053",
                 technique_name="Scheduled Task/Job",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="Scheduled task creation detected, potentially establishing persistence.",
                 evidence_refs=evidence[:3],
             )
@@ -998,12 +960,11 @@ def _build_attack_mappings(
             evidence.append(lsass_match.group(0))
         if not evidence:
             evidence = [raw_log[:80] or "raw_log"]
-        conf = 0.92 if (cred_dump_match and lsass_match) else 0.85
         mappings.append(
             AttackMapping(
                 technique_id="T1003",
                 technique_name="OS Credential Dumping",
-                confidence=conf,
+                evidence_strength="strong",
                 rationale="Credential dumping tool or LSASS memory access detected.",
                 evidence_refs=evidence[:3],
             )
@@ -1021,7 +982,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1070",
                 technique_name="Indicator Removal",
-                confidence=0.9,
+                evidence_strength="strong",
                 rationale="Evidence of log clearing or anti-forensics activity detected.",
                 evidence_refs=evidence[:3],
             )
@@ -1039,7 +1000,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1021",
                 technique_name="Remote Services",
-                confidence=0.82,
+                evidence_strength="moderate",
                 rationale="Remote service or lateral movement tool usage detected.",
                 evidence_refs=evidence[:3] or [raw_log[:80] or "raw_log"],
             )
@@ -1051,7 +1012,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1055",
                 technique_name="Process Injection",
-                confidence=0.88,
+                evidence_strength="strong",
                 rationale="Process injection indicators detected (suspicious API calls or memory operations).",
                 evidence_refs=[inject_match.group(0)],
             )
@@ -1070,7 +1031,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1003",
                 technique_name="OS Credential Dumping",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="Direct read of /etc/shadow or equivalent credential file detected.",
                 evidence_refs=[shadow_match.group(0)],
             )
@@ -1082,7 +1043,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1053",
                 technique_name="Scheduled Task/Job",
-                confidence=0.8,
+                evidence_strength="moderate",
                 rationale="crontab modification detected (Linux scheduled job persistence).",
                 evidence_refs=[crontab_match.group(0)],
             )
@@ -1094,7 +1055,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1070",
                 technique_name="Indicator Removal",
-                confidence=0.88,
+                evidence_strength="strong",
                 rationale="Bulk deletion of Linux system log directory detected.",
                 evidence_refs=[log_delete_linux_match.group(0)],
             )
@@ -1107,7 +1068,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1003",
                 technique_name="OS Credential Dumping",
-                confidence=0.88,
+                evidence_strength="strong",
                 rationale="NTDS.dit copy / ntdsutil IFM / esentutl dump detected.",
                 evidence_refs=[ntds_match.group(0)],
             )
@@ -1122,7 +1083,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1197",
                 technique_name="BITS Jobs",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="bitsadmin /transfer observed (Background Intelligent Transfer Service).",
                 evidence_refs=[bits_match.group(0)],
             )
@@ -1134,7 +1095,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1105",
                 technique_name="Ingress Tool Transfer",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="External payload download utility observed (wget/curl/certutil/bitsadmin/PowerShell download).",
                 evidence_refs=[ingress_match.group(0)],
             )
@@ -1146,7 +1107,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1218",
                 technique_name="System Binary Proxy Execution",
-                confidence=0.82,
+                evidence_strength="moderate",
                 rationale="Execution via trusted Windows binary proxy (rundll32/regsvr32/mshta/installutil).",
                 evidence_refs=[binary_proxy_match.group(0)],
             )
@@ -1158,7 +1119,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1490",
                 technique_name="Inhibit System Recovery",
-                confidence=0.9,
+                evidence_strength="strong",
                 rationale="Shadow copy or recovery artefact deletion detected.",
                 evidence_refs=[inhibit_recovery_match.group(0)],
             )
@@ -1170,7 +1131,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1562",
                 technique_name="Impair Defenses",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="Stopping or disabling a security / logging service detected.",
                 evidence_refs=[impair_match.group(0)],
             )
@@ -1182,7 +1143,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1047",
                 technique_name="Windows Management Instrumentation",
-                confidence=0.82,
+                evidence_strength="moderate",
                 rationale="Process creation via WMI detected.",
                 evidence_refs=[wmi_exec_match.group(0)],
             )
@@ -1201,7 +1162,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1552",
                 technique_name="Unsecured Credentials",
-                confidence=0.8,
+                evidence_strength="moderate",
                 rationale=(
                     "Filesystem search for credential/secret keywords detected "
                     "(credentials-in-files intent)."
@@ -1216,7 +1177,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1083",
                 technique_name="File and Directory Discovery",
-                confidence=0.72,
+                evidence_strength="moderate",
                 rationale="Recursive filesystem enumeration detected.",
                 evidence_refs=[file_disc_match.group(0)],
             )
@@ -1228,7 +1189,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1136",
                 technique_name="Create Account",
-                confidence=0.8,
+                evidence_strength="moderate",
                 rationale="Local account creation command detected.",
                 evidence_refs=[account_create_match.group(0)],
             )
@@ -1240,7 +1201,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1098",
                 technique_name="Account Manipulation",
-                confidence=0.82,
+                evidence_strength="moderate",
                 rationale="Privileged group membership change detected.",
                 evidence_refs=[account_manip_match.group(0)],
             )
@@ -1252,7 +1213,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1552",
                 technique_name="Unsecured Credentials",
-                confidence=0.78,
+                evidence_strength="moderate",
                 rationale="Credential / secret harvesting pattern detected in filesystem command.",
                 evidence_refs=[unsecured_creds_match.group(0)],
             )
@@ -1264,7 +1225,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1048",
                 technique_name="Exfiltration Over Alternative Protocol",
-                confidence=0.82,
+                evidence_strength="moderate",
                 rationale="scp/rsync transfer to remote IP observed.",
                 evidence_refs=[exfil_alt_match.group(0)],
             )
@@ -1276,7 +1237,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1040",
                 technique_name="Network Sniffing",
-                confidence=0.78,
+                evidence_strength="moderate",
                 rationale="Packet capture tool invocation detected.",
                 evidence_refs=[sniff_match.group(0)],
             )
@@ -1288,7 +1249,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1548",
                 technique_name="Abuse Elevation Control Mechanism",
-                confidence=0.75,
+                evidence_strength="moderate",
                 rationale="Search or modification of setuid binaries detected.",
                 evidence_refs=[setuid_match.group(0)],
             )
@@ -1300,7 +1261,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1059",
                 technique_name="Command and Scripting Interpreter",
-                confidence=0.85,
+                evidence_strength="strong",
                 rationale="Reverse-shell style interpreter invocation detected.",
                 evidence_refs=[reverse_shell_match.group(0)],
             )
@@ -1315,7 +1276,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1059",
                 technique_name="Command and Scripting Interpreter",
-                confidence=0.72,
+                evidence_strength="moderate",
                 rationale="Unix shell script invocation from a user-writable path detected.",
                 evidence_refs=[unix_shell_match.group(0)],
             )
@@ -1330,7 +1291,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1078",
                 technique_name="Valid Accounts",
-                confidence=0.7,
+                evidence_strength="moderate",
                 rationale="Successful interactive sshd login as root detected.",
                 evidence_refs=[valid_root_match.group(0)],
             )
@@ -1346,7 +1307,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1110",
                 technique_name="Brute Force",
-                confidence=0.7,
+                evidence_strength="moderate",
                 rationale="sshd Invalid user / Failed password probe detected (single-event brute force candidate).",
                 evidence_refs=[sshd_brute_match.group(0)],
             )
@@ -1358,7 +1319,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1033",
                 technique_name="System Owner/User Discovery",
-                confidence=0.72,
+                evidence_strength="moderate",
                 rationale="System owner / current-user discovery command detected.",
                 evidence_refs=[system_owner_match.group(0)],
             )
@@ -1370,7 +1331,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1016",
                 technique_name="System Network Configuration Discovery",
-                confidence=0.72,
+                evidence_strength="moderate",
                 rationale="Local network configuration enumeration command detected.",
                 evidence_refs=[system_network_match.group(0)],
             )
@@ -1382,7 +1343,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1087",
                 technique_name="Account Discovery",
-                confidence=0.75,
+                evidence_strength="moderate",
                 rationale="Domain account enumeration command detected.",
                 evidence_refs=[domain_account_match.group(0)],
             )
@@ -1394,7 +1355,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1482",
                 technique_name="Domain Trust Discovery",
-                confidence=0.78,
+                evidence_strength="moderate",
                 rationale="Domain trust enumeration command detected.",
                 evidence_refs=[domain_trust_match.group(0)],
             )
@@ -1406,7 +1367,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1057",
                 technique_name="Process Discovery",
-                confidence=0.7,
+                evidence_strength="moderate",
                 rationale="Running-process enumeration command detected.",
                 evidence_refs=[process_disc_match.group(0)],
             )
@@ -1418,7 +1379,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1082",
                 technique_name="System Information Discovery",
-                confidence=0.72,
+                evidence_strength="moderate",
                 rationale="Operating-system / host info enumeration command detected.",
                 evidence_refs=[system_info_match.group(0)],
             )
@@ -1430,7 +1391,7 @@ def _build_attack_mappings(
             AttackMapping(
                 technique_id="T1012",
                 technique_name="Query Registry",
-                confidence=0.72,
+                evidence_strength="moderate",
                 rationale="Windows registry enumeration command detected.",
                 evidence_refs=[query_registry_match.group(0)],
             )
@@ -1449,7 +1410,7 @@ def _build_attack_mappings(
                 AttackMapping(
                     technique_id="T1204",
                     technique_name="User Execution",
-                    confidence=0.65,
+                    evidence_strength="weak",
                     rationale="Process image launched from a user-writable location (Public/Downloads/Temp).",
                     evidence_refs=[user_exec_match.group(0)],
                 )
@@ -1507,7 +1468,7 @@ def _append_network_telemetry_mappings(
                 AttackMapping(
                     technique_id="T1041",
                     technique_name="Exfiltration Over C2 Channel",
-                    confidence=0.82,
+                    evidence_strength="moderate",
                     rationale=(
                         f"Asymmetric high-volume outbound traffic: bytes_sent={int(bytes_sent)} "
                         f"bytes_received={int(bytes_received) if bytes_received is not None else 'n/a'}."
@@ -1542,7 +1503,7 @@ def _append_network_telemetry_mappings(
             AttackMapping(
                 technique_id="T1071",
                 technique_name="Application Layer Protocol",
-                confidence=0.78,
+                evidence_strength="moderate",
                 rationale=(
                     "Low-volume asymmetric HTTP/HTTPS flow with no server response "
                     "is consistent with C2 beaconing."
@@ -1572,7 +1533,7 @@ def _append_network_telemetry_mappings(
             AttackMapping(
                 technique_id="T1595",
                 technique_name="Active Scanning",
-                confidence=0.7,
+                evidence_strength="moderate",
                 rationale=(
                     "Denied or rejected network attempt with minimal payload "
                     "consistent with reconnaissance."
@@ -1597,7 +1558,7 @@ def _append_network_telemetry_mappings(
                 AttackMapping(
                     technique_id="T1021",
                     technique_name="Remote Services",
-                    confidence=0.75,
+                    evidence_strength="moderate",
                     rationale=(
                         f"Accepted {service_hint} session to {dst_ip} with sustained "
                         f"traffic or duration indicates remote service usage."
@@ -1612,24 +1573,23 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
     username = str(normalized_event.get("username", "")).strip()
     source_ip = str(normalized_event.get("source_ip", "")).strip()
     domain = str(normalized_event.get("domain", "")).strip()
-    process = str(normalized_event.get("process", "")).strip()
     failed_attempt_count = normalized_event.get("failed_attempt_count")
 
     if primary_mapping.technique_id == "T1059":
-        process_hint = process or "powershell"
         explain = (
             f"Potential scripted command execution detected via PowerShell indicators. "
             f"Evidence observed: {evidence_preview}."
         )
         plan = [
-            f"Isolate the host and collect process creation plus command-line telemetry for `{process_hint}`.",
-            "Decode and review encoded command content, then confirm whether activity matches approved administration.",
+            "Decode the encoded/obfuscated command and record its plaintext.",
+            "Identify the parent process, launching user, and whether the binary is a known "
+            "management tool (SCCM, Intune, RMM, scheduled maintenance).",
+            "Only if the decoded content is unexplained: escalate for containment per playbook.",
         ]
         checklist = [
             "Validate parent-child process chain and execution user context.",
             "Check for follow-on actions such as credential access, persistence, or suspicious outbound connections.",
         ]
-        confidence = 0.9
     elif primary_mapping.technique_id == "T1071":
         domain_hint = domain or "observed DNS domains"
         explain = (
@@ -1644,7 +1604,6 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Measure unique/randomized subdomain frequency over short time windows.",
             "Validate whether queried domains are approved infrastructure or known malicious destinations.",
         ]
-        confidence = 0.85
     elif primary_mapping.technique_id == "T1110":
         account_hint = username or "target account"
         source_hint = source_ip or "source IP"
@@ -1661,7 +1620,6 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Confirm whether a successful login followed the failed attempts.",
             "Verify MFA enforcement and authentication policy coverage for impacted identities.",
         ]
-        confidence = 0.88
     elif primary_mapping.technique_id == "T1053":
         explain = (
             f"Scheduled task or job creation detected, which may establish persistent access. "
@@ -1675,7 +1633,6 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Confirm whether the task was created by an authorized administrator or automation.",
             "Verify the task command does not execute malicious payloads or download external content.",
         ]
-        confidence = 0.85
     elif primary_mapping.technique_id == "T1003":
         explain = (
             f"Credential dumping activity detected, targeting stored credentials or authentication material. "
@@ -1689,7 +1646,6 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Reset passwords for all accounts that may have been exposed on the affected host.",
             "Check for follow-on lateral movement or privilege escalation using dumped credentials.",
         ]
-        confidence = 0.9
     elif primary_mapping.technique_id == "T1070":
         explain = (
             f"Evidence of log clearing or anti-forensics activity detected. "
@@ -1703,7 +1659,6 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Determine which log channels were cleared and the time window of deleted events.",
             "Investigate the account and process responsible for log deletion.",
         ]
-        confidence = 0.9
     elif primary_mapping.technique_id == "T1021":
         source_hint = source_ip or "source"
         account_hint = username or "target"
@@ -1719,22 +1674,20 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
             "Verify the legitimacy of the remote access tool and the user account involved.",
             "Check destination hosts for signs of compromise or unauthorized changes.",
         ]
-        confidence = 0.82
     elif primary_mapping.technique_id == "T1055":
-        process_hint = process or "target process"
         explain = (
             f"Process injection indicators detected, suggesting code was injected into a remote process. "
             f"Evidence observed: {evidence_preview}."
         )
         plan = [
-            f"Isolate the host and capture memory dump of `{process_hint}` for forensic analysis.",
-            "Identify the source process performing the injection and its execution chain.",
+            "Confirm the process access target and the requesting process/user from telemetry.",
+            "Check whether the accessing process is an approved security or backup agent.",
+            "If unexplained: preserve volatile evidence and escalate per playbook.",
         ]
         checklist = [
             "Validate whether the injection API calls are from legitimate software (e.g., AV, DLP).",
             "Check for injected shellcode, reflective DLL loading, or suspicious memory allocations.",
         ]
-        confidence = 0.88
     else:
         explain = (
             f"Suspicious activity requires triage and containment validation. "
@@ -1742,13 +1695,11 @@ def _build_epc(primary_mapping: AttackMapping, normalized_event: dict[str, Any])
         )
         plan = ["Collect host and network evidence for escalation."]
         checklist = ["Verify impacted assets.", "Confirm containment status."]
-        confidence = 0.5
 
     return EPC(
         explain=explain,
         plan=plan,
         checklist=checklist,
-        confidence=confidence,
         citations=primary_mapping.evidence_refs,
     )
 
@@ -2019,7 +1970,7 @@ def _build_ml_fallback_mapping(
     return AttackMapping(
         technique_id=reported_id,
         technique_name=technique_name,
-        confidence=confidence,
+        evidence_strength="weak",
         rationale=rationale,
         evidence_refs=evidence,
     )
@@ -2036,7 +1987,6 @@ def _build_ml_fallback_epc(mapping: AttackMapping) -> EPC:
             "Check whether any deterministic rule should have matched this event.",
             "Record analyst validation outcome for future model improvement.",
         ],
-        confidence=mapping.confidence,
         citations=mapping.evidence_refs,
     )
 
@@ -2096,10 +2046,7 @@ def _ioc_enrichment_search_paths() -> list[Path]:
 
 # Severity tier used when ordering attack mappings for primary selection.
 # Higher tier = more important.  Keep this tight and honest; ties fall back
-# to confidence.  Techniques not listed get a neutral tier.  This intentionally
-# mirrors the semantic weight of ``desktop_services._HIGH_SEVERITY_TECHNIQUES``
-# / ``_MEDIUM_SEVERITY_TECHNIQUES`` so the picked primary drives a coherent
-# severity in the UI.
+# to evidence strength.  Techniques not listed get a neutral tier.
 _PRIMARY_SEVERITY_TIER: dict[str, int] = {
     # Critical-weight credential / injection / exfiltration techniques.
     "T1003": 4,  # Credential dumping
@@ -2138,22 +2085,23 @@ _PRIMARY_SEVERITY_TIER: dict[str, int] = {
 }
 
 
-def _primary_sort_key(mapping: AttackMapping) -> tuple[int, float]:
+def _primary_sort_key(mapping: AttackMapping) -> tuple[int, int]:
     """Sort key used to pick the *primary* mapping from a list.
 
-    Higher is better.  Severity tier dominates; confidence breaks ties so a
-    pair of rules in the same tier falls back to the more confident one.
+    Higher is better.  Severity tier dominates; evidence strength breaks
+    ties so a pair of rules in the same tier falls back to the one with
+    stronger evidence.
     """
     # Trim sub-techniques ("T1548.002") to the parent technique for tiering.
     technique_id = mapping.technique_id.split(".", 1)[0]
     tier = _PRIMARY_SEVERITY_TIER.get(technique_id, 0)
-    return (tier, float(mapping.confidence))
+    return (tier, {"strong": 2, "moderate": 1, "weak": 0}[mapping.evidence_strength])
 
 
 def _order_mappings_by_importance(mappings: list[AttackMapping]) -> list[AttackMapping]:
     """Return mappings ordered with the most important one first.
 
-    "Most important" = higher severity tier, then higher confidence.  This
+    "Most important" = higher severity tier, then stronger evidence.  This
     is a stable sort so equally-ranked mappings preserve their original
     rule-match order — i.e. we never shuffle things we don't need to.
     """
@@ -2221,28 +2169,34 @@ def run(
         mapping_source = "none"
 
     if not attack_mapping:
-        # Explicit "no mapping" signal.  We *must not* let this fall through
-        # to ``Result(...)`` and raise a generic ``ValidationError`` — that
-        # would be indistinguishable from a real internal correctness bug
-        # (e.g. a rule producing a malformed AttackMapping).  Callers catch
-        # :class:`NoMappingError` to render the benign unmapped state while
-        # leaving any other ValidationError to surface as a real failure.
-        ioc_enrichment_payload: list[dict[str, Any]] | None = None
+        # Explicit "no mapping" outcome.  This is an *expected* result for
+        # benign traffic or inputs the rule table cannot currently express,
+        # so it is reported as a normal ``Result`` with ``status="no_mapping"``
+        # rather than raised as an error.
+        audit = {
+            "pipeline_version": "deterministic-baseline-v1",
+            "normalized_event": event.normalized_event,
+            "entity_count": len(entities),
+            "mapping_count": 0,
+            "mapping_source": "none",
+        }
         if enrich_iocs:
-            ioc_enrichment_payload = _enrich_iocs(
+            audit["ioc_enrichment"] = _enrich_iocs(
                 entities,
                 providers=ioc_providers,
                 api_keys=ioc_api_keys,
             )
-        raise NoMappingError(
+        return Result(
+            status="no_mapping",
             entities=entities,
-            normalized_event=event.normalized_event,
-            ioc_enrichment=ioc_enrichment_payload,
+            attack_mapping=[],
+            epc=None,
+            audit=audit,
         )
 
-    # Pick the primary mapping by severity then confidence so the summary
-    # reflects the most *important* technique, not whichever rule happened
-    # to match first.  All mappings are preserved below.
+    # Pick the primary mapping by severity then evidence strength so the
+    # summary reflects the most *important* technique, not whichever rule
+    # happened to match first.  All mappings are preserved below.
     attack_mapping = _order_mappings_by_importance(attack_mapping)
     primary_mapping = attack_mapping[0]
 
@@ -2264,4 +2218,10 @@ def run(
             api_keys=ioc_api_keys,
         )
 
-    return Result(entities=entities, attack_mapping=attack_mapping, epc=epc, audit=audit)
+    return Result(
+        status="mapped",
+        entities=entities,
+        attack_mapping=attack_mapping,
+        epc=epc,
+        audit=audit,
+    )

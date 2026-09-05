@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import patch
 
 from src.desktop_services import (
+    ASSESSMENT_VALUES,
     SessionSettings,
     analyze_soc_log,
     export_json,
@@ -222,8 +223,10 @@ class SocRemainingEdgeCaseTests(unittest.TestCase):
 
     def test_no_entity_minimal_entity_edge_is_safe_via_wrapper(self) -> None:
         payload = analyze_soc_log("hello world")
-        self.assertFalse(payload["ok"])
-        self.assertIn("error", payload)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "no_mapping")
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["summary"]["entity_count"], 0)
 
 
 class SettingsPersistenceTests(unittest.TestCase):
@@ -280,20 +283,22 @@ class SettingsPersistenceTests(unittest.TestCase):
 class SocExportTests(unittest.TestCase):
     def test_export_json_and_export_soc_csv_content(self) -> None:
         payload = {
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1110",
                 "technique_name": "Brute Force",
-                "confidence": 0.88,
+                "evidence_strength": "strong",
                 "mapping_source": "rule",
                 "entity_count": 1,
             },
             "result": {
+                "status": "mapped",
                 "entities": [{"type": "ipv4", "value": "8.8.8.8"}],
                 "attack_mapping": [
                     {
                         "technique_id": "T1110",
                         "technique_name": "Brute Force",
-                        "confidence": 0.88,
+                        "evidence_strength": "strong",
                         "rationale": "Multiple failed login attempts",
                         "evidence_refs": ["failed login"],
                     }
@@ -312,6 +317,8 @@ class SocExportTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
         self.assertEqual(json_loaded, payload)
         self.assertTrue(any(row["section"] == "summary" and row["item"] == "technique_id" and row["value"] == "T1110" for row in rows))
+        self.assertTrue(any(row["section"] == "summary" and row["item"] == "evidence_strength" and row["value"] == "strong" for row in rows))
+        self.assertFalse(any(row["section"] == "summary" and row["item"] == "confidence" for row in rows))
         self.assertTrue(any(row["section"] == "entity" and row["item"] == "1:ipv4" and row["value"] == "8.8.8.8" for row in rows))
         self.assertTrue(any(row["section"] == "mitre" and row["item"] == "1:T1110" and "failed login" in row["value"] for row in rows))
 
@@ -327,55 +334,59 @@ class SocExportTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
         self.assertTrue(all(set(row.keys()) == {"section", "item", "value"} for row in rows))
 
-    def test_export_soc_csv_uses_partial_result_when_result_missing(self) -> None:
+    def test_export_soc_csv_handles_no_mapping_result_with_null_epc(self) -> None:
         payload = {
-            "ok": False,
+            "ok": True,
+            "status": "no_mapping",
             "summary": {
-                "technique_id": "N/A",
-                "technique_name": "Not mapped",
-                "confidence": 0.0,
+                "technique_id": None,
+                "technique_name": None,
                 "mapping_source": "none",
                 "entity_count": 1,
             },
-            "partial_result": {
+            "result": {
+                "status": "no_mapping",
                 "entities": [{"type": "username", "value": "alice"}],
                 "attack_mapping": [],
-                "epc": {},
+                "epc": None,
                 "audit": {
                     "mapping_source": "none",
                     "entity_count": 1,
                     "mapping_count": 0,
-                    "ioc_enrichment": [{"ioc": "10.0.0.5", "status": "clean"}],
+                    "ioc_enrichment": [
+                        {"ioc": "10.0.0.5", "status": "skipped", "reason": "private_or_reserved_ip"},
+                    ],
                 },
             },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
-            csv_path = Path(tmpdir) / "soc_partial.csv"
+            csv_path = Path(tmpdir) / "soc_no_mapping.csv"
             export_soc_csv(str(csv_path), payload)
             with csv_path.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
-        self.assertTrue(any(row["section"] == "summary" and row["item"] == "technique_id" and row["value"] == "N/A" for row in rows))
+        self.assertTrue(any(row["section"] == "summary" and row["item"] == "technique_id" and row["value"] == "" for row in rows))
+        self.assertTrue(any(row["section"] == "summary" and row["item"] == "mapping_source" and row["value"] == "none" for row in rows))
         self.assertTrue(any(row["section"] == "entity" and row["item"] == "1:username" and row["value"] == "alice" for row in rows))
         self.assertTrue(
             any(
                 row["section"] == "ioc_enrichment"
                 and row["item"] == "1:10.0.0.5"
-                and row["value"] == "clean"
+                and row["value"] == "skipped (private_or_reserved_ip)"
                 for row in rows
             )
         )
 
-    def test_export_soc_csv_handles_analyze_no_mapping_partial_result_payload(self) -> None:
+    def test_export_soc_csv_handles_analyze_no_mapping_payload(self) -> None:
         payload = analyze_soc_log(
             "authentication failed user=alice src_ip=10.0.0.5 domain=evil.example.com",
             enrich_iocs=True,
         )
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload.get("reason"), "no_mapping")
-        self.assertIsInstance(payload.get("partial_result"), dict)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload.get("status"), "no_mapping")
+        self.assertIsNone(payload["result"]["epc"])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            csv_path = Path(tmpdir) / "soc_partial_from_wrapper.csv"
+            csv_path = Path(tmpdir) / "soc_no_mapping_from_wrapper.csv"
             export_soc_csv(str(csv_path), payload)
             with csv_path.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -383,8 +394,8 @@ class SocExportTests(unittest.TestCase):
         self.assertTrue(
             any(
                 row["section"] == "summary"
-                and row["item"] == "technique_id"
-                and row["value"] == "N/A"
+                and row["item"] == "mapping_source"
+                and row["value"] == "none"
                 for row in rows
             )
         )
@@ -470,9 +481,12 @@ class IocVerdictInScanTests(unittest.TestCase):
         with patch("src.desktop_services._load_ioc_module", return_value=fake):
             rows = scan_iocs(["8.8.8.8"], manual_ioc_type=None, providers=None, api_keys=None)
         self.assertEqual(len(rows), 1)
-        self.assertIn("verdict", rows[0])
-        self.assertIn("verdict_confidence", rows[0])
+        self.assertIn("assessment", rows[0])
+        self.assertIn(rows[0]["assessment"], ASSESSMENT_VALUES)
         self.assertIn("verdict_reasoning", rows[0])
+        self.assertNotIn("verdict", rows[0])
+        self.assertNotIn("verdict_confidence", rows[0])
+        self.assertNotIn("score", rows[0])
 
 
 class AppEntrySmokeTests(unittest.TestCase):

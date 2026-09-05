@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,7 +36,7 @@ class Entity(StrictBaseModel):
 class AttackMapping(StrictBaseModel):
     technique_id: str = Field(pattern=r"^T\d{4}(\.\d{3})?$")
     technique_name: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_strength: Literal["strong", "moderate", "weak"]
     rationale: str
     evidence_refs: list[str] = Field(min_length=1)
 
@@ -45,12 +45,26 @@ class EPC(StrictBaseModel):
     explain: str
     plan: list[str] = Field(min_length=1)
     checklist: list[str] = Field(min_length=2)
-    confidence: float = Field(ge=0.0, le=1.0)
     citations: list[str] = Field(min_length=1)
 
 
 class Result(StrictBaseModel):
+    status: Literal["mapped", "no_mapping"]
     entities: list[Entity]
-    attack_mapping: list[AttackMapping] = Field(min_length=1)
-    epc: EPC
+    attack_mapping: list[AttackMapping]
+    epc: EPC | None
     audit: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_status_consistency(self) -> Result:
+        if self.status == "mapped":
+            if len(self.attack_mapping) < 1:
+                raise ValueError("status 'mapped' requires at least one attack_mapping")
+            if self.epc is None:
+                raise ValueError("status 'mapped' requires a non-None epc")
+        else:
+            if len(self.attack_mapping) != 0:
+                raise ValueError("status 'no_mapping' requires an empty attack_mapping")
+            if self.epc is not None:
+                raise ValueError("status 'no_mapping' requires epc to be None")
+        return self

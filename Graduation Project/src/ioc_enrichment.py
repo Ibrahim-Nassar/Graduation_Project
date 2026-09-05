@@ -5,7 +5,7 @@ import ipaddress
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from typing import Any
 
 import requests
@@ -84,125 +84,140 @@ def _aggregate_status(provider_results: dict[str, dict[str, Any]]) -> str:
     return "unknown"
 
 
-def _aggregate_score(provider_results: dict[str, dict[str, Any]]) -> int:
-    if not provider_results:
-        return 0
-    score_map = {"malicious": 90, "suspicious": 65, "clean": 10, "unknown": 0, "n/a": 0, "not_found": 0}
-    scores = [
-        score_map.get(str((payload or {}).get("status", "unknown")).lower(), 0)
-        for payload in provider_results.values()
-    ]
-    return int(round(sum(scores) / max(len(scores), 1)))
+ASSESSMENT_CORROBORATED_MALICIOUS = "corroborated_malicious"
+ASSESSMENT_PROVIDERS_DISAGREE = "providers_disagree"
+ASSESSMENT_SINGLE_SOURCE_MALICIOUS = "single_source_malicious"
+ASSESSMENT_SUSPICIOUS_ONLY = "suspicious_only"
+ASSESSMENT_NO_SUSPICIOUS_FINDINGS = "no_suspicious_findings"
+ASSESSMENT_INSUFFICIENT_DATA = "insufficient_data"
+
+ASSESSMENT_VALUES: tuple[str, ...] = (
+    ASSESSMENT_CORROBORATED_MALICIOUS,
+    ASSESSMENT_PROVIDERS_DISAGREE,
+    ASSESSMENT_SINGLE_SOURCE_MALICIOUS,
+    ASSESSMENT_SUSPICIOUS_ONLY,
+    ASSESSMENT_NO_SUSPICIOUS_FINDINGS,
+    ASSESSMENT_INSUFFICIENT_DATA,
+)
 
 
-_PROVIDER_WEIGHTS: dict[str, float] = {
-    "virustotal": 2.0,
-    "abuseipdb": 1.5,
-    "otx": 1.0,
-    "threatfox": 1.2,
-}
-
-_VERDICT_MALICIOUS = "Malicious"
-_VERDICT_SUSPICIOUS = "Suspicious"
-_VERDICT_CLEAN = "Clean"
-_VERDICT_UNKNOWN = "Unknown"
+def _provider_reason(name: str, payload: dict[str, Any], status: str) -> str:
+    if name == "virustotal":
+        details = payload.get("details")
+        if isinstance(details, dict) and "vendor_total" in details:
+            malicious = int(details.get("malicious", 0) or 0)
+            vendor_total = int(details.get("vendor_total", 0) or 0)
+            return f"{name}: {status} ({malicious}/{vendor_total} vendors)"
+    return f"{name}: {status}"
 
 
 def compute_verdict(provider_results: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Produce a single unified verdict from all provider results.
+    """Produce a categorical assessment from all provider results.
 
-    Returns a dict with ``verdict``, ``confidence`` (0-100), and ``reasoning``.
-    Uses weighted voting: providers with higher reliability contribute more to
-    the final decision.  A single credible "malicious" flag from a high-weight
-    provider is enough to override clean signals from lower-weight sources.
+    Returns a dict with ``assessment`` (one of :data:`ASSESSMENT_VALUES`),
+    ``reasoning`` (which providers responded and what each said), plus the
+    provider-name lists ``responding``, ``malicious``, ``suspicious`` and
+    ``clean``.  There is deliberately no numeric field: the assessment says
+    how the providers agreed, not how "confident" the tool is.
     """
-    if not provider_results:
-        return {"verdict": _VERDICT_UNKNOWN, "confidence": 0, "reasoning": "No provider data available."}
-
-    status_buckets: dict[str, list[str]] = {
-        "malicious": [], "suspicious": [], "clean": [], "other": [],
-    }
-    weighted_scores: dict[str, float] = {"malicious": 0.0, "suspicious": 0.0, "clean": 0.0}
-    total_weight = 0.0
+    malicious: list[str] = []
+    suspicious: list[str] = []
+    clean: list[str] = []
+    responding: list[str] = []
     reasons: list[str] = []
 
-    for name, payload in provider_results.items():
-        status = str((payload or {}).get("status", "unknown")).lower()
-        weight = _PROVIDER_WEIGHTS.get(name, 1.0)
-
-        if status in {"error", "auth_error", "n/a", "not_found", "not_supported", "unknown"}:
-            status_buckets["other"].append(name)
-            continue
-
-        total_weight += weight
+    for name, payload in (provider_results or {}).items():
+        payload = payload or {}
+        status = str(payload.get("status", "unknown")).lower()
         if status == "malicious":
-            status_buckets["malicious"].append(name)
-            weighted_scores["malicious"] += weight
-            reasons.append(f"{name} flagged malicious")
+            malicious.append(name)
         elif status == "suspicious":
-            status_buckets["suspicious"].append(name)
-            weighted_scores["suspicious"] += weight
-            reasons.append(f"{name} flagged suspicious")
+            suspicious.append(name)
         elif status == "clean":
-            status_buckets["clean"].append(name)
-            weighted_scores["clean"] += weight
+            clean.append(name)
+        else:
+            continue
+        responding.append(name)
+        reasons.append(_provider_reason(name, payload, status))
 
-    if total_weight == 0:
-        return {"verdict": _VERDICT_UNKNOWN, "confidence": 0, "reasoning": "All providers returned inconclusive results."}
-
-    mal_ratio = weighted_scores["malicious"] / total_weight
-    sus_ratio = weighted_scores["suspicious"] / total_weight
-    clean_ratio = weighted_scores["clean"] / total_weight
-
-    if status_buckets["malicious"]:
-        verdict = _VERDICT_MALICIOUS
-        agreement = mal_ratio
-        if not reasons:
-            reasons.append("Multiple providers detected malicious activity")
-    elif status_buckets["suspicious"]:
-        verdict = _VERDICT_SUSPICIOUS
-        agreement = sus_ratio
-        if not reasons:
-            reasons.append("Suspicious indicators detected")
-    elif status_buckets["clean"]:
-        verdict = _VERDICT_CLEAN
-        agreement = clean_ratio
-        reasons = ["All responding providers returned clean"]
+    if len(malicious) >= 2:
+        assessment = ASSESSMENT_CORROBORATED_MALICIOUS
+    elif (malicious or suspicious) and clean:
+        assessment = ASSESSMENT_PROVIDERS_DISAGREE
+    elif len(malicious) == 1 and not clean:
+        assessment = ASSESSMENT_SINGLE_SOURCE_MALICIOUS
+    elif suspicious and not malicious and not clean:
+        assessment = ASSESSMENT_SUSPICIOUS_ONLY
+    elif responding and len(clean) == len(responding):
+        assessment = ASSESSMENT_NO_SUSPICIOUS_FINDINGS
     else:
-        verdict = _VERDICT_UNKNOWN
-        agreement = 0.0
-        reasons = ["Insufficient data for a determination"]
+        assessment = ASSESSMENT_INSUFFICIENT_DATA
 
-    # Confidence reflects *our belief in the verdict*, not the population
-    # coverage.  A strong result from one credible provider should not look
-    # artificially weak just because the other providers stayed silent
-    # (no key, no match, rate-limited, etc.).  We therefore base confidence
-    # on the agreement ratio among *responding* providers and only apply a
-    # mild dampener when exactly one provider weighed in, to honour the
-    # "corroboration is nice" signal without manufacturing distrust.
-    responding = (
-        len(status_buckets["malicious"])
-        + len(status_buckets["suspicious"])
-        + len(status_buckets["clean"])
-    )
-    # Single-provider verdicts get a small haircut; two or more responding
-    # providers get no haircut at all.  Empirically this keeps a credible
-    # single "Malicious" hit at ~85% rather than dropping it to ~33%.
-    single_source_dampener = 0.85 if responding == 1 else 1.0
-    confidence = int(round(agreement * single_source_dampener * 100))
-    confidence = max(0, min(100, confidence))
+    if reasons:
+        reasoning = "; ".join(reasons) + "."
+    else:
+        reasoning = "No provider returned a usable result."
 
-    # Final sanity gate: never display a decisive verdict with a confidence
-    # that looks untrustworthy next to it.  If agreement is genuinely low
-    # (mixed signals across responding providers) the verdict itself should
-    # already be Suspicious / Unknown, so we only floor it here to avoid
-    # the pathological "Malicious @ 20%" row the UI used to produce.
-    if verdict in {_VERDICT_MALICIOUS, _VERDICT_SUSPICIOUS, _VERDICT_CLEAN}:
-        confidence = max(confidence, 50)
+    return {
+        "assessment": assessment,
+        "reasoning": reasoning,
+        "responding": responding,
+        "malicious": malicious,
+        "suspicious": suspicious,
+        "clean": clean,
+    }
 
-    reasoning = "; ".join(reasons[:3]) + "." if reasons else "No determination."
 
-    return {"verdict": verdict, "confidence": confidence, "reasoning": reasoning}
+_NON_PUBLIC_DOMAIN_LABELS = frozenset({
+    "local", "localdomain", "internal", "intranet", "lan", "corp", "home",
+    "localhost", "test", "example", "invalid",
+})
+
+
+def _is_public_host(host: str) -> tuple[bool, str]:
+    candidate = host.strip().strip("[]").lower()
+    if not candidate:
+        return False, "non_public_domain"
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        address = None
+    if address is not None:
+        if address.is_global:
+            return True, ""
+        return False, "private_or_reserved_ip"
+    if "." not in candidate or candidate.rstrip(".").split(".")[-1] in _NON_PUBLIC_DOMAIN_LABELS:
+        return False, "non_public_domain"
+    return True, ""
+
+
+def is_scannable_ioc(value: str, ioc_type: str) -> tuple[bool, str]:
+    """Return ``(True, "")`` when ``value`` may be sent to external providers.
+
+    Private / reserved IPs, non-public domain suffixes (``.local``,
+    ``.corp`` ...) and URLs whose host fails those rules must never leave
+    the workstation.  Hashes carry no network information and are always
+    scannable.  When not scannable the second element names the reason.
+    """
+    ioc = value.strip()
+    if ioc_type == IOC_TYPE_HASH:
+        return True, ""
+    if ioc_type == IOC_TYPE_IP:
+        try:
+            if ipaddress.ip_address(ioc).is_global:
+                return True, ""
+        except ValueError:
+            pass
+        return False, "private_or_reserved_ip"
+    if ioc_type == IOC_TYPE_DOMAIN:
+        return _is_public_host(ioc)
+    if ioc_type == IOC_TYPE_URL:
+        try:
+            host = urlsplit(ioc).hostname or ""
+        except ValueError:
+            host = ""
+        return _is_public_host(host)
+    return True, ""
 
 
 def _normalize_provider_result(
@@ -279,13 +294,16 @@ def vt_lookup(ioc: str, ioc_type: str, api_key: str | None) -> dict[str, Any]:
     malicious = int(stats.get("malicious", 0) or 0)
     suspicious = int(stats.get("suspicious", 0) or 0)
     harmless = int(stats.get("harmless", 0) or 0)
-    if malicious > 0:
-        return {"status": "malicious", "score": min(100, 80 + malicious), "details": stats}
-    if suspicious > 0:
-        return {"status": "suspicious", "score": min(79, 50 + suspicious), "details": stats}
-    if harmless > 0:
-        return {"status": "clean", "score": 10, "details": stats}
-    return {"status": "unknown", "score": 0, "details": stats}
+    undetected = int(stats.get("undetected", 0) or 0)
+    details = stats
+    details["vendor_total"] = malicious + suspicious + harmless + undetected
+    if malicious >= 3:
+        return {"status": "malicious", "score": min(100, 80 + malicious), "details": details}
+    if 1 <= malicious < 3 or suspicious > 0:
+        return {"status": "suspicious", "score": min(79, 50 + suspicious), "details": details}
+    if malicious == 0 and suspicious == 0 and harmless > 0:
+        return {"status": "clean", "score": 10, "details": details}
+    return {"status": "unknown", "score": 0, "details": details}
 
 
 def abuseipdb_lookup(ioc: str, api_key: str | None) -> dict[str, Any]:
@@ -418,12 +436,26 @@ def scan_ioc(
     api_keys: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     ioc = value.strip()
+    ioc_type = detect_ioc_type(ioc)
+    scannable, skip_reason = is_scannable_ioc(ioc, ioc_type)
+    if not scannable:
+        # Private / internal indicators never leave the workstation: no
+        # provider call is made and nothing is cached.
+        return {
+            "ioc": ioc,
+            "type": ioc_type,
+            "status": "skipped",
+            "reason": skip_reason,
+            "providers": {},
+            "verdict": compute_verdict({}),
+            "errors": [],
+        }
+
     cache_k = _cache_key(ioc, providers)
     with _CACHE_LOCK:
         if cache_k in _SCAN_CACHE:
             return dict(_SCAN_CACHE[cache_k])
 
-    ioc_type = detect_ioc_type(ioc)
     enabled = _enabled_providers(providers)
     keys = api_keys or {}
 
@@ -458,13 +490,11 @@ def scan_ioc(
                 provider_results[name] = _normalize_provider_result(name, result, ioc, ioc_type)
 
     status = _aggregate_status(provider_results)
-    score = _aggregate_score(provider_results)
     verdict = compute_verdict(provider_results)
     output = {
         "ioc": ioc,
         "type": ioc_type,
         "status": status,
-        "score": score,
         "verdict": verdict,
         "providers": provider_results,
         "errors": [],

@@ -241,13 +241,15 @@ class NormalizationLayerTests(unittest.TestCase):
 
 
 class MlFallbackTests(unittest.TestCase):
-    def test_no_rule_match_uses_ml_fallback_and_confidence(self) -> None:
+    def test_no_rule_match_uses_ml_fallback_with_weak_evidence(self) -> None:
         model = _FakeModel("T1059", [0.1, 0.9])
         result = run("routine event without deterministic signatures", model=model)
         dump = result.model_dump(mode="json")
+        self.assertEqual(dump["status"], "mapped")
         self.assertEqual(dump["attack_mapping"][0]["technique_id"], "T1059")
         self.assertEqual(dump["audit"]["mapping_source"], "ml_fallback")
-        self.assertAlmostEqual(float(dump["attack_mapping"][0]["confidence"]), 0.9, places=6)
+        self.assertEqual(dump["attack_mapping"][0]["evidence_strength"], "weak")
+        self.assertNotIn("confidence", dump["attack_mapping"][0])
         self.assertEqual(model.predict_calls, 1)
         self.assertEqual(model.predict_proba_calls, 1)
 

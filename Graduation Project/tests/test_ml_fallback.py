@@ -89,9 +89,10 @@ class MlFallbackGatingTests(unittest.TestCase):
         dump = result.model_dump(mode="json")
         self.assertEqual(dump["audit"]["mapping_source"], "ml_fallback")
         self.assertEqual(dump["attack_mapping"][0]["technique_id"], "T1105")
-        self.assertAlmostEqual(
-            float(dump["attack_mapping"][0]["confidence"]), 0.95, places=6
-        )
+        # ML fallback output is always reported as weak evidence — the
+        # classifier probability is never surfaced as a confidence value.
+        self.assertEqual(dump["attack_mapping"][0]["evidence_strength"], "weak")
+        self.assertNotIn("confidence", dump["attack_mapping"][0])
         self.assertEqual(model.predict_calls, 1)
 
     def test_low_confidence_ml_prediction_yields_no_mapping(self) -> None:
@@ -116,9 +117,17 @@ class MlFallbackGatingTests(unittest.TestCase):
 
 
 class ResolveFallbackModelTests(unittest.TestCase):
-    def test_missing_default_artifact_returns_none(self) -> None:
-        with patch.object(desktop_services, "DEFAULT_MODEL_PATH", Path("nope.pkl")):
+    def test_empty_path_never_loads_a_model(self) -> None:
+        # There is no bundled default artifact: an empty path means "no ML
+        # fallback", and nothing is auto-loaded from disk.
+        self.assertFalse(hasattr(desktop_services, "DEFAULT_MODEL_PATH"))
+        with patch("src.desktop_services.load_model") as load_mock:
             self.assertIsNone(_resolve_fallback_model(""))
+            self.assertIsNone(_resolve_fallback_model("   "))
+        load_mock.assert_not_called()
+
+    def test_missing_explicit_artifact_returns_none(self) -> None:
+        self.assertIsNone(_resolve_fallback_model(str(Path("nope.pkl"))))
 
     def test_corrupt_artifact_degrades_to_none(self, tmp_suffix: str = ".pkl") -> None:
         import tempfile
@@ -146,20 +155,22 @@ class ResolveFallbackModelTests(unittest.TestCase):
 
 
 class AnalyzeSocLogMlWiringTests(unittest.TestCase):
-    def test_rule_hit_reports_rule_mapping_source_even_with_default_model(self) -> None:
+    def test_rule_hit_reports_rule_mapping_source_without_model(self) -> None:
         payload = analyze_soc_log(
             "user=alice process=powershell.exe command_line='powershell -enc QUJDRA=='"
         )
         self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "mapped")
         self.assertEqual(payload["summary"]["mapping_source"], "rule")
         self.assertEqual(payload["summary"]["technique_id"], "T1059")
 
     def test_no_rule_and_no_model_returns_no_mapping(self) -> None:
-        # Force the default model off by pointing to a non-existent artifact.
-        with patch.object(desktop_services, "DEFAULT_MODEL_PATH", Path("missing.pkl")):
-            payload = analyze_soc_log("benign heartbeat ok status green")
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload.get("reason"), "no_mapping")
+        # No model path → no ML fallback is loaded, so an unmatched log is
+        # reported as a completed "no_mapping" analysis.
+        payload = analyze_soc_log("benign heartbeat ok status green")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload.get("status"), "no_mapping")
+        self.assertEqual(payload["summary"]["mapping_source"], "none")
 
     def test_no_rule_hit_surfaces_ml_fallback_when_model_available(self) -> None:
         fake_model = _FakeModel("T1071", [0.05, 0.95])
@@ -172,7 +183,8 @@ class AnalyzeSocLogMlWiringTests(unittest.TestCase):
         summary = payload["summary"]
         self.assertEqual(summary["mapping_source"], "ml_fallback")
         self.assertEqual(summary["technique_id"], "T1071")
-        self.assertGreaterEqual(float(summary["confidence"]), 0.9)
+        self.assertEqual(summary["evidence_strength"], "weak")
+        self.assertNotIn("confidence", summary)
 
 
 class MlFallbackMarginTests(unittest.TestCase):
@@ -238,8 +250,8 @@ class MlFallbackBenignSuppressionTests(unittest.TestCase):
             payload = analyze_soc_log(
                 "user=alice successfully logged in from 10.0.0.8 and opened outlook.exe"
             )
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload.get("reason"), "no_mapping")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload.get("status"), "no_mapping")
         self.assertEqual(payload["summary"]["mapping_source"], "none")
 
 
@@ -355,18 +367,20 @@ class FeatureTextBuilderTests(unittest.TestCase):
 class MlFallbackBannerTests(unittest.TestCase):
     def test_banner_labels_ml_fallback_distinctly_from_rule_mapping(self) -> None:
         ml_payload = {
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1071",
                 "technique_name": "Application Layer Protocol",
-                "confidence": 0.72,
+                "evidence_strength": "weak",
                 "mapping_source": "ml_fallback",
             }
         }
         rule_payload = {
+            "status": "mapped",
             "summary": {
                 "technique_id": "T1059",
                 "technique_name": "Command and Scripting Interpreter",
-                "confidence": 0.9,
+                "evidence_strength": "strong",
                 "mapping_source": "rule",
             }
         }
@@ -375,9 +389,13 @@ class MlFallbackBannerTests(unittest.TestCase):
 
         self.assertIn("ML fallback", ml_text)
         self.assertIn("verify", ml_text.lower())
+        self.assertIn("weak", ml_text)
+        self.assertNotIn("%", ml_text)
         self.assertEqual(ml_tone, "info")
 
         self.assertIn("Rule-based", rule_text)
+        self.assertIn("strong", rule_text)
+        self.assertNotIn("%", rule_text)
         self.assertEqual(rule_tone, "success")
 
 

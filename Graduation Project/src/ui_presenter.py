@@ -25,17 +25,17 @@ _STATE_COPY: dict[AnalysisState, StateCopy] = {
     AnalysisState.MAPPED: StateCopy(
         label="Mapped",
         tone="success",
-        explanation="The analyzer produced a deterministic ATT&CK mapping with sufficient confidence.",
-        next_action="Review the mapping and recommended response plan, then triage according to the assessed severity.",
+        explanation="The analyzer produced an ATT&CK mapping backed by strong or moderate evidence.",
+        next_action="Review the mapping and recommended response plan, then triage per playbook.",
     ),
     AnalysisState.MAPPED_LOW_CONFIDENCE: StateCopy(
-        label="Mapped (low confidence)",
+        label="Mapped (weak evidence)",
         tone="warning",
-        explanation="An ATT&CK technique matched but the confidence is below 60%. Treat the result as preliminary.",
+        explanation="An ATT&CK technique matched but the evidence is weak. Treat the result as preliminary.",
         next_action="Inspect the cited evidence and verify with a second data source before responding.",
     ),
     AnalysisState.NO_MAPPING: StateCopy(
-        label="No ATT&CK mapping",
+        label="No reliable ATT&CK mapping",
         tone="info",
         explanation="The analyzer completed but no ATT&CK rule matched. This is the expected outcome for benign traffic or inputs the rule table cannot currently express.",
         next_action="Review the extracted entities, add correlated log lines, and re-run.",
@@ -73,7 +73,7 @@ class EntityView:
 class MappingView:
     technique_id: str | None = None
     technique_name: str | None = None
-    confidence: float | None = None
+    evidence_strength: str | None = None
     source: str | None = None
     match_type: str = "none"
     rationale: str | None = None
@@ -82,17 +82,10 @@ class MappingView:
 
 
 @dataclass
-class SeverityView:
-    severity: str | None = None
-    source: str = "none"
-
-
-@dataclass
 class AnalysisBreakdown:
     state: AnalysisState
     state_copy: StateCopy
     outcome_summary: str
-    severity: SeverityView = field(default_factory=SeverityView)
     mapping: MappingView = field(default_factory=MappingView)
     entities: list[EntityView] = field(default_factory=list)
     weak_signals: list[str] = field(default_factory=list)
@@ -111,17 +104,6 @@ def _result_block(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _severity_from_payload(payload: dict[str, Any]) -> str | None:
-    try:
-        from src.desktop_services import assess_severity
-    except Exception:
-        return None
-    try:
-        return assess_severity(payload)
-    except Exception:
-        return None
-
-
 def _classify_state(
     payload: dict[str, Any],
     *,
@@ -129,16 +111,16 @@ def _classify_state(
     entity_count: int,
 ) -> AnalysisState:
     ok = bool(payload.get("ok"))
+    status = str(payload.get("status") or "").strip().lower()
     reason = str(payload.get("reason") or "").strip().lower()
     error_message = str(payload.get("error") or "").strip()
 
     if ok and mapping.technique_id:
-        confidence = float(mapping.confidence or 0.0)
-        if confidence < 0.6:
+        if mapping.evidence_strength == "weak":
             return AnalysisState.MAPPED_LOW_CONFIDENCE
         return AnalysisState.MAPPED
 
-    if not ok and reason == "no_mapping":
+    if ok and status == "no_mapping":
         if entity_count == 0:
             return AnalysisState.MALFORMED
         return AnalysisState.NO_MAPPING
@@ -166,8 +148,7 @@ def _weak_signals(
 ) -> list[str]:
     concerns: list[str] = []
     if state == AnalysisState.MAPPED_LOW_CONFIDENCE:
-        pct = int(round(float(mapping.confidence or 0.0) * 100))
-        concerns.append(f"Low confidence mapping ({pct}%)")
+        concerns.append("Weak-evidence mapping")
     if mapping.source == "ml_fallback":
         concerns.append("Mapping from ML fallback — verify manually")
     if state == AnalysisState.MALFORMED:
@@ -204,7 +185,7 @@ def build_breakdown(payload: dict[str, Any], *, raw_log: str = "") -> AnalysisBr
         mapping = MappingView(
             technique_id=first.get("technique_id"),
             technique_name=first.get("technique_name"),
-            confidence=float(first.get("confidence") or 0.0) if first.get("confidence") is not None else None,
+            evidence_strength=str(first.get("evidence_strength")) if first.get("evidence_strength") else None,
             source=first.get("source") or audit.get("mapping_source"),
             match_type=str(first.get("match_type", "rule")),
             rationale=first.get("rationale"),
@@ -216,20 +197,17 @@ def build_breakdown(payload: dict[str, Any], *, raw_log: str = "") -> AnalysisBr
             ],
         )
 
-    severity_value = _severity_from_payload(payload)
-    severity = SeverityView(severity=severity_value)
-
     state = _classify_state(payload, mapping=mapping, entity_count=len(entities))
     copy = state_copy(state)
 
     weak = _weak_signals(state=state, mapping=mapping, entity_count=len(entities))
 
     if state == AnalysisState.MAPPED:
-        outcome_summary = f"Mapped to {mapping.technique_id} ({mapping.technique_name}) at {mapping.confidence:.0%} confidence." if mapping.technique_id else "Mapped."
+        outcome_summary = f"Mapped to {mapping.technique_id} ({mapping.technique_name}) with {mapping.evidence_strength or 'unknown'} evidence." if mapping.technique_id else "Mapped."
     elif state == AnalysisState.MAPPED_LOW_CONFIDENCE:
-        outcome_summary = f"Low-confidence mapping to {mapping.technique_id}. Review before acting." if mapping.technique_id else "Low-confidence mapping."
+        outcome_summary = f"Weak-evidence mapping to {mapping.technique_id}. Review before acting." if mapping.technique_id else "Weak-evidence mapping."
     elif state == AnalysisState.NO_MAPPING:
-        outcome_summary = f"No ATT&CK mapping produced. {len(entities)} entities extracted."
+        outcome_summary = f"No reliable ATT&CK mapping. {len(entities)} entities extracted."
     elif state == AnalysisState.MALFORMED:
         outcome_summary = "Input was malformed — no entities or mapping produced."
     else:
@@ -245,7 +223,6 @@ def build_breakdown(payload: dict[str, Any], *, raw_log: str = "") -> AnalysisBr
         state=state,
         state_copy=copy,
         outcome_summary=outcome_summary,
-        severity=severity,
         mapping=mapping,
         entities=entities,
         weak_signals=weak,
@@ -273,13 +250,11 @@ def format_mapping_summary(breakdown: AnalysisBreakdown) -> str:
     m = breakdown.mapping
     lines = [
         f"State: {breakdown.state_copy.label}",
-        f"Severity: {breakdown.severity.severity or 'n/a'}",
     ]
     if m.technique_id:
-        confidence_txt = f"{m.confidence:.0%}" if isinstance(m.confidence, float) else "n/a"
         lines.append(
             f"ATT&CK: {m.technique_id} ({m.technique_name or 'unknown'}) "
-            f"via {m.source or 'rule'} at {confidence_txt}"
+            f"via {m.source or 'rule'}, evidence {m.evidence_strength or 'n/a'}"
         )
     else:
         lines.append("ATT&CK: none")
@@ -298,7 +273,6 @@ __all__ = [
     "AnalysisState",
     "EntityView",
     "MappingView",
-    "SeverityView",
     "StateCopy",
     "build_breakdown",
     "format_mapping_summary",

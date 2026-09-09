@@ -27,6 +27,10 @@ Before committing anything under `real/`:
   keys, licence keys, file paths that name a real project, ticket IDs.
 - Keep one log line per line. Blank lines are skipped by the loader.
 
+Log files in this directory are exempted from the root `*.log` ignore rule, so
+anything placed under `real/` will be committed — sanitize before saving, not
+after.
+
 If in doubt, leave the line out. The corpus is worth less than a leak.
 
 ## How the gate uses this directory

@@ -1,0 +1,262 @@
+Mar  3 06:00:14 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.14.31 DST=203.0.113.10 PROTO=TCP SPT=51422 DPT=443 LEN=60
+Mar  3 06:01:42 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.14.52 DST=203.0.113.11 PROTO=TCP SPT=51888 DPT=443 LEN=60
+Mar  3 06:03:09 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.16.77 DST=203.0.113.12 PROTO=TCP SPT=52104 DPT=443 LEN=60
+Mar  3 06:04:37 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.16.81 DST=198.51.100.20 PROTO=TCP SPT=52330 DPT=443 LEN=60
+Mar  3 06:06:04 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.30.18 DST=198.51.100.21 PROTO=TCP SPT=39112 DPT=8443 LEN=60
+Mar  3 06:07:32 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.30.11 DST=198.51.100.22 PROTO=TCP SPT=39880 DPT=9443 LEN=60
+Mar  3 06:08:59 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.5.11 DST=192.0.2.30 PROTO=UDP SPT=123 DPT=123 LEN=76
+Mar  3 06:10:27 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.5.12 DST=192.0.2.31 PROTO=UDP SPT=123 DPT=123 LEN=76
+Mar  3 06:11:54 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.40.2.20 DST=192.0.2.40 PROTO=TCP SPT=44120 DPT=25 LEN=60
+Mar  3 06:13:22 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.40.2.20 DST=192.0.2.41 PROTO=TCP SPT=44212 DPT=587 LEN=60
+Mar  3 06:14:49 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=198.51.100.240 DST=203.0.113.5 PROTO=TCP SPT=44330 DPT=23 LEN=44
+Mar  3 06:16:17 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=198.51.100.241 DST=203.0.113.5 PROTO=TCP SPT=51120 DPT=3389 LEN=44
+Mar  3 06:17:44 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=192.0.2.201 DST=203.0.113.5 PROTO=UDP SPT=5060 DPT=5060 LEN=48
+Mar  3 06:19:12 fw-edge01 kernel: FW-DROP IN=eth1 OUT=eth0 SRC=10.20.14.31 DST=198.51.100.99 PROTO=TCP SPT=52901 DPT=6667 LEN=60
+Mar  3 06:20:39 fw-edge01 kernel: FW-DROP IN=eth1 OUT=eth0 SRC=10.20.16.77 DST=198.51.100.98 PROTO=TCP SPT=53012 DPT=445 LEN=60
+Mar  3 06:22:07 fw-core02 kernel: FW-ACCEPT IN=vlan14 OUT=vlan30 SRC=10.20.14.31 DST=10.20.30.18 PROTO=TCP SPT=53190 DPT=443 LEN=60
+Mar  3 06:23:34 fw-core02 kernel: FW-ACCEPT IN=vlan14 OUT=vlan30 SRC=10.20.14.52 DST=10.20.30.11 PROTO=TCP SPT=53288 DPT=445 LEN=60
+Mar  3 06:25:02 fw-core02 kernel: FW-ACCEPT IN=vlan14 OUT=vlan5 SRC=10.20.14.90 DST=10.20.5.11 PROTO=UDP SPT=57120 DPT=53 LEN=72
+Mar  3 06:26:29 fw-core02 kernel: FW-ACCEPT IN=vlan16 OUT=vlan5 SRC=10.20.16.81 DST=10.20.5.12 PROTO=UDP SPT=57244 DPT=53 LEN=74
+Mar  3 06:27:57 fw-core02 kernel: FW-ACCEPT IN=vlan30 OUT=vlan30 SRC=10.20.30.22 DST=10.20.30.44 PROTO=TCP SPT=41200 DPT=22 LEN=60
+Mar  3 06:29:24 fw-core02 kernel: FW-ACCEPT IN=vlan30 OUT=vlan30 SRC=10.20.30.18 DST=10.20.30.50 PROTO=TCP SPT=41388 DPT=1433 LEN=60
+Mar  3 06:30:52 fw-core02 kernel: FW-ACCEPT IN=vlan16 OUT=vlan30 SRC=10.20.16.77 DST=10.20.30.60 PROTO=TCP SPT=41502 DPT=3389 LEN=60
+Mar  3 06:32:19 fw-core02 kernel: FW-DROP IN=vlan16 OUT=vlan5 SRC=10.20.16.81 DST=10.20.5.11 PROTO=TCP SPT=41660 DPT=88 LEN=60
+Mar  3 06:33:47 fw-core02 kernel: FW-DROP IN=vlan14 OUT=vlan30 SRC=10.20.14.44 DST=10.20.30.50 PROTO=TCP SPT=41722 DPT=1434 LEN=60
+Mar  3 06:35:14 dns-resolver01 named[1420]: client 10.20.14.31#57002 query: www.example.com IN A + (10.20.5.11)
+Mar  3 06:36:42 dns-resolver01 named[1420]: client 10.20.14.31#57004 query: a1b2.cloudfront.net IN A + (10.20.5.11)
+Mar  3 06:38:09 dns-resolver01 named[1420]: client 10.20.14.31#57006 query: e12345.dsca.akamaiedge.net IN A + (10.20.5.11)
+Mar  3 06:39:37 dns-resolver01 named[1420]: client 10.20.14.31#57008 query: assets.sfx.ms IN A + (10.20.5.11)
+Mar  3 06:41:04 dns-resolver01 named[1420]: client 10.20.14.31#57010 query: fe2.update.microsoft.com IN A + (10.20.5.11)
+Mar  3 06:42:32 dns-resolver01 named[1420]: client 10.20.14.52#58102 query: outlook.office365.com IN A + (10.20.5.11)
+Mar  3 06:43:59 dns-resolver01 named[1420]: client 10.20.14.52#58104 query: teams.microsoft.com IN A + (10.20.5.11)
+Mar  3 06:45:27 dns-resolver01 named[1420]: client 10.20.14.52#58106 query: c8d9.cloudfront.net IN A + (10.20.5.11)
+Mar  3 06:46:54 dns-resolver01 named[1420]: client 10.20.16.77#59202 query: crl.microsoft.com IN A + (10.20.5.12)
+Mar  3 06:48:22 dns-resolver01 named[1420]: client 10.20.16.77#59204 query: ocsp.digicert.com IN A + (10.20.5.12)
+Mar  3 06:49:49 dns-resolver01 named[1420]: client 10.20.16.77#59206 query: e4711.dscx.akamaiedge.net IN A + (10.20.5.12)
+Mar  3 06:51:17 dns-resolver01 named[1420]: client 10.20.16.81#60302 query: login.microsoftonline.com IN A + (10.20.5.12)
+Mar  3 06:52:44 dns-resolver01 named[1420]: client 10.20.16.81#60304 query: officecdn.microsoft.com IN A + (10.20.5.12)
+Mar  3 06:54:12 dns-resolver01 named[1420]: client 10.20.16.81#60306 query: download.sfx.ms IN A + (10.20.5.12)
+Mar  3 06:55:39 dns-resolver01 named[1420]: client 10.20.30.18#61402 query: updates.corpvendor.example.com IN A + (10.20.5.11)
+Mar  3 06:57:07 dns-resolver01 named[1420]: client 10.20.30.18#61404 query: updates.corpvendor.example.com IN A + (10.20.5.11)
+Mar  3 06:58:34 dns-resolver01 named[1420]: client 10.20.30.18#61406 query: updates.corpvendor.example.com IN AAAA + (10.20.5.11)
+Mar  3 07:00:02 dns-resolver01 named[1420]: client 10.20.30.18#61408 query: updates.corpvendor.example.com IN A + (10.20.5.11)
+Mar  3 07:01:29 dns-resolver01 named[1420]: client 10.20.30.18#61410 query: updates.corpvendor.example.com IN A + (10.20.5.11)
+Mar  3 07:02:57 dns-resolver01 named[1420]: client 10.20.30.11#62502 query: telemetry.northwindbackup.example.net IN A + (10.20.5.11)
+Mar  3 07:04:24 dns-resolver01 named[1420]: client 10.20.30.11#62504 query: telemetry.northwindbackup.example.net IN A + (10.20.5.11)
+Mar  3 07:05:52 dns-resolver01 named[1420]: client 10.20.30.11#62506 query: telemetry.northwindbackup.example.net IN A + (10.20.5.11)
+Mar  3 07:07:19 dns-resolver01 named[1420]: client 10.20.14.90#63602 query: ntp.corp.example.internal IN A + (10.20.5.12)
+Mar  3 07:08:47 dns-resolver01 named[1420]: client 10.20.14.90#63604 query: srv-file-01.corp.example.internal IN A + (10.20.5.12)
+Mar  3 07:10:14 dns-resolver01 named[1420]: client 10.20.14.44#64702 query: registry.corp.example.internal IN A + (10.20.5.12)
+Mar  3 07:11:42 dns-resolver01 named[1420]: client 10.20.14.44#64704 query: pypi.org IN A + (10.20.5.12)
+Mar  3 07:13:09 dns-resolver01 named[1420]: client 10.20.14.44#64706 query: registry.npmjs.org IN A + (10.20.5.12)
+Mar  3 07:14:37 dns-resolver01 named[1420]: client 10.30.1.55#50802 query: archive.ubuntu.com IN A + (10.20.5.11)
+Mar  3 07:16:04 dns-resolver01 named[1420]: client 10.30.1.55#50804 query: security.ubuntu.com IN A + (10.20.5.11)
+Mar  3 07:17:32 dns-resolver01 named[1420]: client 10.30.1.55#50806 query: deb.nodesource.com IN A + (10.20.5.11)
+Mar  3 07:18:59 dns-resolver01 named[1420]: client 10.30.3.22#51902 query: nas01.corp.example.internal IN A + (10.20.5.11)
+Mar  3 07:20:27 dns-resolver01 named[1420]: client 10.40.2.20#52002 query: relay-a.mailhost.example.net IN MX + (10.20.5.12)
+Mar  3 07:21:54 dns-resolver01 named[1420]: client 10.40.2.20#52004 query: relay-b.mailhost.example.net IN MX + (10.20.5.12)
+Mar  3 07:23:22 dns-resolver01 named[1420]: client 10.40.2.20#52006 query: _dmarc.example.com IN TXT + (10.20.5.12)
+Mar  3 07:24:49 dns-resolver01 named[1420]: client 10.40.2.20#52008 query: selector1._domainkey.example.com IN TXT + (10.20.5.12)
+Mar  3 07:30:17 ids-sensor01 snort: [1:1000201:2] INFO ICMP Echo Request observed [Classification: Misc activity] [Priority: 3] {ICMP} 10.20.14.90 -> 10.20.5.11
+Mar  3 07:31:44 ids-sensor01 snort: [1:1000202:2] INFO ICMP Echo Reply observed [Classification: Misc activity] [Priority: 3] {ICMP} 10.20.5.11 -> 10.20.14.90
+Mar  3 07:33:12 ids-sensor01 snort: [1:1000310:1] INFO SNMP get-request to monitored device [Classification: Misc activity] [Priority: 3] {UDP} 10.20.9.40:41200 -> 10.20.1.5:161
+Mar  3 07:34:39 ids-sensor01 snort: [1:1000311:1] INFO SNMP get-response from monitored device [Classification: Misc activity] [Priority: 3] {UDP} 10.20.1.5:161 -> 10.20.9.40:41200
+Mar  3 07:36:07 ids-sensor01 snort: [1:1000420:3] INFO TLS 1.3 handshake completed [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.20.14.31:53190 -> 10.20.30.18:443
+Mar  3 07:37:34 ids-sensor01 snort: [1:1000421:3] INFO TLS certificate observed CN=intranet.corp.example.internal [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.20.30.18:443 -> 10.20.14.31:53190
+Mar  3 07:39:02 ids-sensor01 snort: [1:1000512:1] INFO DHCP lease acknowledged [Classification: Misc activity] [Priority: 3] {UDP} 10.30.1.1:67 -> 10.30.1.55:68
+Mar  3 07:40:29 ids-sensor01 snort: [1:1000601:2] INFO NTP client request [Classification: Misc activity] [Priority: 3] {UDP} 10.20.5.11:123 -> 192.0.2.30:123
+Mar  3 07:41:57 ids-sensor01 suricata: [1:2200074:2] SURICATA STREAM 3way handshake SYNACK resend with different ACK [Classification: Generic Protocol Command Decode] [Priority: 3] {TCP} 10.20.14.52:53288 -> 10.20.30.11:445
+Mar  3 07:43:24 ids-sensor01 suricata: [1:2210045:2] SURICATA STREAM Packet with invalid timestamp [Classification: Generic Protocol Command Decode] [Priority: 3] {TCP} 10.20.16.77:41502 -> 10.20.30.60:3389
+Mar  3 07:44:52 ids-sensor01 suricata: [1:2013028:6] ET POLICY curl User-Agent Outbound [Classification: Attempted Information Leak] [Priority: 2] {TCP} 10.30.1.55:44120 -> 203.0.113.60:443
+Mar  3 07:46:19 ids-sensor01 suricata: [1:2100368:9] GPL ICMP_INFO PING BSDtype [Classification: Misc activity] [Priority: 3] {ICMP} 10.20.9.40 -> 10.20.30.18
+Mar  3 07:47:47 ids-sensor01 suricata: [1:2001569:16] ET SCAN Behavioral Unusual Port 1433 traffic [Classification: Misc activity] [Priority: 3] {TCP} 10.20.30.18:41388 -> 10.20.30.50:1433
+Mar  3 07:49:14 ids-sensor01 zeek: notice SSL::Invalid_Server_Cert 10.20.14.44 -> 10.20.30.70 self-signed certificate for build agent registry
+{"ts":"2025-03-03T07:55:00Z","event_type":"netflow","src_ip":"10.20.14.31","dst_ip":"203.0.113.10","src_port":51422,"dst_port":443,"proto":"tcp","packets":214,"bytes":184320,"duration":42.1,"tcp_flags":"AP"}
+{"ts":"2025-03-03T07:56:28Z","event_type":"netflow","src_ip":"10.20.14.52","dst_ip":"203.0.113.11","src_port":51888,"dst_port":443,"proto":"tcp","packets":188,"bytes":152064,"duration":31.7,"tcp_flags":"AP"}
+{"ts":"2025-03-03T07:57:55Z","event_type":"netflow","src_ip":"10.20.16.77","dst_ip":"203.0.113.12","src_port":52104,"dst_port":443,"proto":"tcp","packets":402,"bytes":412160,"duration":88.4,"tcp_flags":"AP"}
+{"ts":"2025-03-03T07:59:23Z","event_type":"netflow","src_ip":"10.20.16.81","dst_ip":"198.51.100.20","src_port":52330,"dst_port":443,"proto":"tcp","packets":96,"bytes":78848,"duration":12.9,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:00:50Z","event_type":"netflow","src_ip":"10.20.30.18","dst_ip":"198.51.100.21","src_port":39112,"dst_port":8443,"proto":"tcp","packets":44,"bytes":31744,"duration":6.2,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:02:18Z","event_type":"netflow","src_ip":"10.20.30.11","dst_ip":"198.51.100.22","src_port":39880,"dst_port":9443,"proto":"tcp","packets":61,"bytes":48128,"duration":9.8,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:03:45Z","event_type":"netflow","src_ip":"10.20.14.90","dst_ip":"10.20.5.11","src_port":57120,"dst_port":53,"proto":"udp","packets":2,"bytes":248,"duration":0.02,"tcp_flags":"-"}
+{"ts":"2025-03-03T08:05:13Z","event_type":"netflow","src_ip":"10.20.5.11","dst_ip":"192.0.2.30","src_port":123,"dst_port":123,"proto":"udp","packets":2,"bytes":152,"duration":0.01,"tcp_flags":"-"}
+{"ts":"2025-03-03T08:06:40Z","event_type":"netflow","src_ip":"10.20.30.22","dst_ip":"10.20.30.44","src_port":41200,"dst_port":22,"proto":"tcp","packets":1204,"bytes":214016,"duration":612.4,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:08:08Z","event_type":"netflow","src_ip":"10.40.2.20","dst_ip":"192.0.2.40","src_port":44120,"dst_port":25,"proto":"tcp","packets":38,"bytes":24576,"duration":4.1,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:09:35Z","event_type":"netflow","src_ip":"10.30.1.55","dst_ip":"203.0.113.60","src_port":44121,"dst_port":443,"proto":"tcp","packets":1841,"bytes":2711552,"duration":124.8,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:11:03Z","event_type":"netflow","src_ip":"10.20.9.40","dst_ip":"10.20.1.5","src_port":41200,"dst_port":161,"proto":"udp","packets":4,"bytes":512,"duration":0.08,"tcp_flags":"-"}
+{"ts":"2025-03-03T08:12:30Z","event_type":"netflow","src_ip":"10.20.30.18","dst_ip":"10.20.30.50","src_port":41388,"dst_port":1433,"proto":"tcp","packets":612,"bytes":401408,"duration":301.2,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:13:58Z","event_type":"netflow","src_ip":"10.20.16.77","dst_ip":"10.20.30.60","src_port":41502,"dst_port":3389,"proto":"tcp","packets":8412,"bytes":6291456,"duration":1804.7,"tcp_flags":"AP"}
+{"ts":"2025-03-03T08:15:25Z","event_type":"netflow","src_ip":"10.20.14.44","dst_ip":"10.20.30.70","src_port":44880,"dst_port":443,"proto":"tcp","packets":2210,"bytes":3145728,"duration":88.1,"tcp_flags":"AP"}
+Mar  3 08:20:53 vpn-gw01 openvpn: user=t.okafor CN=LAP-SALES-207 connected from 203.0.113.140 assigned 10.50.1.22
+Mar  3 08:22:20 vpn-gw01 openvpn: user=t.okafor CN=LAP-SALES-207 TLS handshake completed, cipher TLS_AES_256_GCM_SHA384
+Mar  3 08:23:48 vpn-gw01 openvpn: user=mnguyen CN=LAP-EXEC-004 connected from 203.0.113.141 assigned 10.50.1.23
+Mar  3 08:25:15 vpn-gw01 openvpn: user=mnguyen CN=LAP-EXEC-004 push route 10.20.0.0/16 via 10.50.1.1
+Mar  3 08:26:43 vpn-gw01 openvpn: user=lchen CN=WKS-HR-032 connected from 203.0.113.142 assigned 10.50.1.24
+Mar  3 08:28:10 vpn-gw01 openvpn: user=t.okafor CN=LAP-SALES-207 disconnected, duration 2841s, bytes_in 41287104 bytes_out 8412928
+Mar  3 08:29:38 vpn-gw01 openvpn: user=lchen CN=WKS-HR-032 disconnected, duration 182s, bytes_in 1048576 bytes_out 262144
+Mar  3 08:31:05 vpn-gw01 openvpn: client-instance 10.50.1.25 renegotiating data channel key
+Mar  3 08:32:33 vpn-gw01 openvpn: user=jmalik CN=WKS-ACC-011 connected from 203.0.113.143 assigned 10.50.1.25
+Mar  3 08:34:00 vpn-gw01 openvpn: user=jmalik CN=WKS-ACC-011 client certificate OK, serial 0x4f2c8811
+Mar  3 08:35:28 dhcp-srv01 dhcpd: DHCPDISCOVER from aa:bb:cc:11:22:33 via eth1
+Mar  3 08:36:55 dhcp-srv01 dhcpd: DHCPOFFER on 10.20.16.77 to aa:bb:cc:11:22:33 (LAP-SALES-207) via eth1
+Mar  3 08:38:23 dhcp-srv01 dhcpd: DHCPREQUEST for 10.20.16.77 (10.20.1.10) from aa:bb:cc:11:22:33 via eth1
+Mar  3 08:39:50 dhcp-srv01 dhcpd: DHCPACK on 10.20.16.77 to aa:bb:cc:11:22:33 (LAP-SALES-207) via eth1 lease-time 28800
+Mar  3 08:41:18 dhcp-srv01 dhcpd: DHCPRELEASE of 10.20.16.90 from aa:bb:cc:44:55:66 (LAP-TEMP-019) via eth1
+Mar  3 08:42:45 dhcp-srv01 dhcpd: DHCPACK on 10.20.14.31 to aa:bb:cc:77:88:99 (WKS-ACC-011) via eth1 lease-time 28800
+Mar  3 08:44:13 dhcp-srv01 dhcpd: DHCPACK on 10.20.14.52 to aa:bb:cc:aa:bb:cc (WKS-HR-032) via eth1 lease-time 28800
+Mar  3 08:45:40 dhcp-srv01 dhcpd: DHCPINFORM from 10.20.14.44 via eth1
+Mar  3 08:47:08 dhcp-srv01 dhcpd: Wrote 214 leases to leases file.
+Mar  4 06:00:35 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.14.44 DST=203.0.113.13 PROTO=TCP SPT=54120 DPT=443 LEN=60
+Mar  4 06:02:03 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.14.90 DST=203.0.113.14 PROTO=TCP SPT=54244 DPT=443 LEN=60
+Mar  4 06:03:30 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.30.1.55 DST=198.51.100.23 PROTO=TCP SPT=54388 DPT=443 LEN=60
+Mar  4 06:04:58 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.30.4.18 DST=198.51.100.24 PROTO=TCP SPT=54502 DPT=443 LEN=60
+Mar  4 06:06:25 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.30.3.22 DST=198.51.100.25 PROTO=TCP SPT=54666 DPT=8443 LEN=60
+Mar  4 06:07:53 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.30.2.7 DST=198.51.100.26 PROTO=TCP SPT=54780 DPT=9443 LEN=60
+Mar  4 06:09:20 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.40.2.20 DST=192.0.2.42 PROTO=TCP SPT=54902 DPT=465 LEN=60
+Mar  4 06:10:48 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.5.11 DST=192.0.2.32 PROTO=UDP SPT=123 DPT=123 LEN=76
+Mar  4 06:12:15 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=192.0.2.202 DST=203.0.113.6 PROTO=TCP SPT=44412 DPT=22 LEN=44
+Mar  4 06:13:43 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=198.51.100.242 DST=203.0.113.6 PROTO=TCP SPT=44520 DPT=8080 LEN=44
+Mar  4 06:15:10 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=198.51.100.243 DST=203.0.113.7 PROTO=ICMP TYPE=8 CODE=0 LEN=84
+Mar  4 06:16:38 fw-core02 kernel: FW-ACCEPT IN=vlan30 OUT=vlan5 SRC=10.20.30.44 DST=10.20.5.11 PROTO=UDP SPT=57880 DPT=53 LEN=70
+Mar  4 06:18:05 fw-core02 kernel: FW-ACCEPT IN=vlan30 OUT=vlan5 SRC=10.20.30.50 DST=10.20.5.12 PROTO=UDP SPT=58012 DPT=123 LEN=76
+Mar  4 06:19:33 fw-core02 kernel: FW-ACCEPT IN=vlan9 OUT=vlan30 SRC=10.20.9.40 DST=10.20.30.18 PROTO=TCP SPT=58120 DPT=443 LEN=60
+Mar  4 06:21:00 fw-core02 kernel: FW-ACCEPT IN=vlan9 OUT=vlan30 SRC=10.20.9.40 DST=10.20.30.11 PROTO=TCP SPT=58244 DPT=9443 LEN=60
+Mar  4 06:22:28 fw-core02 kernel: FW-ACCEPT IN=vlan14 OUT=vlan9 SRC=10.20.14.31 DST=10.20.9.10 PROTO=TCP SPT=58390 DPT=443 LEN=60
+Mar  4 06:23:55 fw-core02 kernel: FW-ACCEPT IN=vlan14 OUT=vlan9 SRC=10.20.14.44 DST=10.20.9.12 PROTO=TCP SPT=58502 DPT=443 LEN=60
+Mar  4 06:25:23 fw-core02 kernel: FW-DROP IN=vlan16 OUT=vlan30 SRC=10.20.16.90 DST=10.20.30.50 PROTO=TCP SPT=58660 DPT=1433 LEN=60
+Mar  4 06:26:50 fw-core02 kernel: FW-DROP IN=vlan14 OUT=vlan5 SRC=10.20.14.52 DST=10.20.5.11 PROTO=TCP SPT=58722 DPT=389 LEN=60
+Mar  4 06:28:18 dns-resolver02 named[1502]: client 10.20.30.44#57202 query: registry.corp.example.internal IN A + (10.20.5.12)
+Mar  4 06:29:45 dns-resolver02 named[1502]: client 10.20.30.44#57204 query: docker.io IN A + (10.20.5.12)
+Mar  4 06:31:13 dns-resolver02 named[1502]: client 10.20.30.44#57206 query: production.cloudflare.docker.com IN A + (10.20.5.12)
+Mar  4 06:32:40 dns-resolver02 named[1502]: client 10.20.30.50#58202 query: srv-sql-02.corp.example.internal IN A + (10.20.5.12)
+Mar  4 06:34:08 dns-resolver02 named[1502]: client 10.20.9.40#59302 query: monitor.corp.example.internal IN A + (10.20.5.12)
+Mar  4 06:35:35 dns-resolver02 named[1502]: client 10.20.9.40#59304 query: grafana.corp.example.internal IN A + (10.20.5.12)
+Mar  4 06:37:03 dns-resolver02 named[1502]: client 10.20.14.31#60402 query: b7c8.cloudfront.net IN A + (10.20.5.12)
+Mar  4 06:38:30 dns-resolver02 named[1502]: client 10.20.14.31#60404 query: e8899.dscb.akamaiedge.net IN A + (10.20.5.12)
+Mar  4 06:39:58 dns-resolver02 named[1502]: client 10.20.14.31#60406 query: static.sfx.ms IN A + (10.20.5.12)
+Mar  4 06:41:25 dns-resolver02 named[1502]: client 10.20.14.31#60408 query: ctldl.windowsupdate.com IN A + (10.20.5.12)
+Mar  4 06:42:53 dns-resolver02 named[1502]: client 10.20.14.52#61502 query: emdl.update.microsoft.com IN A + (10.20.5.12)
+Mar  4 06:44:20 dns-resolver02 named[1502]: client 10.20.14.52#61504 query: tlu.dl.delivery.mp.microsoft.com IN A + (10.20.5.12)
+Mar  4 06:45:48 dns-resolver02 named[1502]: client 10.20.14.90#62602 query: settings-win.data.microsoft.com IN A + (10.20.5.11)
+Mar  4 06:47:15 dns-resolver02 named[1502]: client 10.20.14.90#62604 query: v10.events.data.microsoft.com IN A + (10.20.5.11)
+Mar  4 06:48:43 dns-resolver02 named[1502]: client 10.20.16.81#63702 query: nav.smartscreen.microsoft.com IN A + (10.20.5.11)
+Mar  4 06:50:10 dns-resolver02 named[1502]: client 10.20.16.81#63704 query: e3191.dscc.akamaiedge.net IN A + (10.20.5.11)
+Mar  4 06:51:38 dns-resolver02 named[1502]: client 10.20.16.77#64802 query: d3f4.cloudfront.net IN A + (10.20.5.11)
+Mar  4 06:53:05 dns-resolver02 named[1502]: client 10.20.16.77#64804 query: sfx.ms IN A + (10.20.5.11)
+Mar  4 06:54:33 dns-resolver02 named[1502]: client 10.20.30.11#65002 query: telemetry.northwindbackup.example.net IN AAAA + (10.20.5.11)
+Mar  4 06:56:00 dns-resolver02 named[1502]: client 10.20.30.11#65004 query: license.northwindbackup.example.net IN A + (10.20.5.11)
+Mar  4 06:57:28 dns-resolver02 named[1502]: client 10.20.30.18#65102 query: updates.corpvendor.example.com IN A + (10.20.5.12)
+Mar  4 06:58:55 dns-resolver02 named[1502]: client 10.20.30.18#65104 query: cdn.corpvendor.example.com IN A + (10.20.5.12)
+Mar  4 07:00:23 ids-sensor02 snort: [1:1000203:2] INFO ICMP Echo Request observed [Classification: Misc activity] [Priority: 3] {ICMP} 10.20.9.40 -> 10.20.5.12
+Mar  4 07:01:50 ids-sensor02 snort: [1:1000312:1] INFO SNMP get-request to switch stack [Classification: Misc activity] [Priority: 3] {UDP} 10.20.9.40:41288 -> 10.20.1.6:161
+Mar  4 07:03:18 ids-sensor02 snort: [1:1000422:3] INFO TLS 1.2 handshake completed [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.20.16.81:52330 -> 198.51.100.20:443
+Mar  4 07:04:45 ids-sensor02 snort: [1:1000423:3] INFO TLS SNI observed login.microsoftonline.com [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.20.16.81:52332 -> 198.51.100.20:443
+Mar  4 07:06:13 ids-sensor02 snort: [1:1000513:1] INFO DHCP discover seen on access vlan [Classification: Misc activity] [Priority: 3] {UDP} 0.0.0.0:68 -> 255.255.255.255:67
+Mar  4 07:07:40 ids-sensor02 snort: [1:1000602:2] INFO NTP server response [Classification: Misc activity] [Priority: 3] {UDP} 192.0.2.30:123 -> 10.20.5.11:123
+Mar  4 07:09:08 ids-sensor02 suricata: [1:2013504:5] ET POLICY GNU/Linux APT User-Agent Outbound likely related to package management [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.30.1.55:54388 -> 198.51.100.23:443
+Mar  4 07:10:35 ids-sensor02 suricata: [1:2001219:20] ET SCAN Potential SSH Scan [Classification: Attempted Information Leak] [Priority: 2] {TCP} 192.0.2.202:44412 -> 203.0.113.6:22
+Mar  4 07:12:03 ids-sensor02 suricata: [1:2027390:3] ET INFO Observed DNS Query to .cloud TLD [Classification: Not Suspicious Traffic] [Priority: 3] {UDP} 10.20.14.31:60410 -> 10.20.5.12:53
+Mar  4 07:13:30 ids-sensor02 suricata: [1:2210020:2] SURICATA STREAM excessive retransmissions [Classification: Generic Protocol Command Decode] [Priority: 3] {TCP} 10.20.16.77:41502 -> 10.20.30.60:3389
+Mar  4 07:14:58 ids-sensor02 zeek: notice Scan::Address_Scan 10.20.9.40 scanned 12 hosts on port 161 within 60s during scheduled SNMP sweep
+Mar  4 07:16:25 ids-sensor02 zeek: conn 10.20.14.31 53190 10.20.30.18 443 tcp ssl SF 184320 412160 orig_pkts=214 resp_pkts=302
+Mar  4 07:17:53 ids-sensor02 zeek: conn 10.20.30.22 41200 10.20.30.44 22 tcp ssh SF 214016 118784 orig_pkts=1204 resp_pkts=980
+Mar  4 07:19:20 ids-sensor02 zeek: dns 10.20.14.90 57120 10.20.5.11 53 udp srv-file-01.corp.example.internal A NOERROR
+Mar  4 07:20:48 ids-sensor02 zeek: http 10.20.9.40 58120 10.20.30.18 443 GET /health 200 CorpMonitor/2.1
+{"ts":"2025-03-04T07:30:00Z","event_type":"netflow","src_ip":"10.20.14.44","dst_ip":"203.0.113.13","src_port":54120,"dst_port":443,"proto":"tcp","packets":344,"bytes":301056,"duration":51.8,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:31:28Z","event_type":"netflow","src_ip":"10.30.4.18","dst_ip":"198.51.100.24","src_port":54502,"dst_port":443,"proto":"tcp","packets":128,"bytes":98304,"duration":18.2,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:32:55Z","event_type":"netflow","src_ip":"10.30.3.22","dst_ip":"198.51.100.25","src_port":54666,"dst_port":8443,"proto":"tcp","packets":52,"bytes":36864,"duration":7.4,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:34:23Z","event_type":"netflow","src_ip":"10.30.2.7","dst_ip":"198.51.100.26","src_port":54780,"dst_port":9443,"proto":"tcp","packets":71,"bytes":57344,"duration":11.1,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:35:50Z","event_type":"netflow","src_ip":"10.40.2.20","dst_ip":"192.0.2.42","src_port":54902,"dst_port":465,"proto":"tcp","packets":44,"bytes":28672,"duration":5.3,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:37:18Z","event_type":"netflow","src_ip":"10.20.9.40","dst_ip":"10.20.1.6","src_port":41288,"dst_port":161,"proto":"udp","packets":6,"bytes":768,"duration":0.11,"tcp_flags":"-"}
+{"ts":"2025-03-04T07:38:45Z","event_type":"netflow","src_ip":"10.20.30.44","dst_ip":"10.20.5.11","src_port":57880,"dst_port":53,"proto":"udp","packets":2,"bytes":236,"duration":0.02,"tcp_flags":"-"}
+{"ts":"2025-03-04T07:40:13Z","event_type":"netflow","src_ip":"10.20.30.50","dst_ip":"10.20.5.12","src_port":58012,"dst_port":123,"proto":"udp","packets":2,"bytes":152,"duration":0.01,"tcp_flags":"-"}
+{"ts":"2025-03-04T07:41:40Z","event_type":"netflow","src_ip":"10.50.1.22","dst_ip":"10.20.30.18","src_port":48120,"dst_port":443,"proto":"tcp","packets":882,"bytes":712704,"duration":204.6,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:43:08Z","event_type":"netflow","src_ip":"10.50.1.23","dst_ip":"10.20.30.11","src_port":48244,"dst_port":445,"proto":"tcp","packets":1412,"bytes":1835008,"duration":388.9,"tcp_flags":"AP"}
+{"ts":"2025-03-04T07:44:35Z","event_type":"netflow","src_ip":"10.50.1.24","dst_ip":"10.20.5.11","src_port":48388,"dst_port":53,"proto":"udp","packets":4,"bytes":448,"duration":0.05,"tcp_flags":"-"}
+{"ts":"2025-03-04T07:46:03Z","event_type":"netflow","src_ip":"10.20.1.5","dst_ip":"10.20.9.40","src_port":161,"dst_port":41200,"proto":"udp","packets":4,"bytes":1024,"duration":0.09,"tcp_flags":"-"}
+Mar  4 08:00:30 sw-access01 %LINK-3-UPDOWN: Interface GigabitEthernet1/0/14, changed state to up
+Mar  4 08:01:58 sw-access01 %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet1/0/14, changed state to up
+Mar  4 08:03:25 sw-access01 %LINK-3-UPDOWN: Interface GigabitEthernet1/0/22, changed state to down
+Mar  4 08:04:53 sw-access01 %DOT1X-5-SUCCESS: Authentication successful for client (aa:bb:cc:11:22:33) on Interface Gi1/0/14
+Mar  4 08:06:20 sw-access01 %AUTHMGR-5-VLANASSIGN: VLAN 16 assigned to Interface Gi1/0/14 AuditSessionID 0A140109
+Mar  4 08:07:48 sw-access01 %SYS-5-CONFIG_I: Configured from console by netops on vty0 (10.30.1.14)
+Mar  4 08:09:15 sw-core01 %OSPF-5-ADJCHG: Process 1, Nbr 10.20.1.2 on Vlan5 from LOADING to FULL, Loading Done
+Mar  4 08:10:43 sw-core01 %HSRP-5-STATECHANGE: Vlan14 Grp 1 state Standby -> Active
+Mar  4 08:12:10 sw-core01 %SNMP-5-COLDSTART: SNMP agent on host sw-core01 is undergoing a cold start
+Mar  4 08:13:38 sw-core01 %SYS-6-LOGGINGHOST_STARTSTRUCT: Logging to host 10.20.9.45 started - reconnection
+Mar  4 08:15:05 rtr-wan01 %BGP-5-ADJCHANGE: neighbor 203.0.113.1 Up
+Mar  4 08:16:33 rtr-wan01 %BGP-5-NBR_RESET: Neighbor 203.0.113.2 reset (Peer closed the session)
+Mar  4 08:18:00 rtr-wan01 %LINEPROTO-5-UPDOWN: Line protocol on Interface Tunnel10, changed state to up
+Mar  4 08:19:28 rtr-wan01 %CRYPTO-5-IKMP_SA_AUTH: IKE SA authenticated with peer 203.0.113.3
+Mar  4 08:20:55 rtr-wan01 %IPSEC-5-SA_ESTABLISHED: IPsec SA established with 203.0.113.3, SPI 0x8A21C41F
+Mar  5 06:00:23 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.50.1.22 DST=203.0.113.15 PROTO=TCP SPT=48120 DPT=443 LEN=60
+Mar  5 06:01:51 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.50.1.23 DST=203.0.113.16 PROTO=TCP SPT=48244 DPT=443 LEN=60
+Mar  5 06:03:18 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.9.45 DST=198.51.100.27 PROTO=TCP SPT=48380 DPT=8443 LEN=60
+Mar  5 06:04:46 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.9.45 DST=198.51.100.28 PROTO=TCP SPT=48490 DPT=9443 LEN=60
+Mar  5 06:06:13 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.40.2.21 DST=192.0.2.43 PROTO=TCP SPT=48602 DPT=25 LEN=60
+Mar  5 06:07:41 fw-edge01 kernel: FW-ACCEPT IN=eth1 OUT=eth0 SRC=10.20.5.12 DST=192.0.2.33 PROTO=UDP SPT=123 DPT=123 LEN=76
+Mar  5 06:09:08 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=192.0.2.203 DST=203.0.113.8 PROTO=TCP SPT=44680 DPT=445 LEN=44
+Mar  5 06:10:36 fw-edge01 kernel: FW-DROP IN=eth0 OUT= SRC=198.51.100.244 DST=203.0.113.8 PROTO=UDP SPT=161 DPT=161 LEN=48
+Mar  5 06:12:03 fw-edge01 kernel: FW-DROP IN=eth1 OUT=eth0 SRC=10.20.14.90 DST=198.51.100.97 PROTO=TCP SPT=48790 DPT=1337 LEN=60
+Mar  5 06:13:31 fw-core02 kernel: FW-ACCEPT IN=vlan50 OUT=vlan30 SRC=10.50.1.24 DST=10.20.30.18 PROTO=TCP SPT=48880 DPT=443 LEN=60
+Mar  5 06:14:58 fw-core02 kernel: FW-ACCEPT IN=vlan50 OUT=vlan5 SRC=10.50.1.25 DST=10.20.5.11 PROTO=UDP SPT=48990 DPT=53 LEN=68
+Mar  5 06:16:26 fw-core02 kernel: FW-ACCEPT IN=vlan9 OUT=vlan1 SRC=10.20.9.40 DST=10.20.1.5 PROTO=UDP SPT=49100 DPT=161 LEN=64
+Mar  5 06:17:53 fw-core02 kernel: FW-ACCEPT IN=vlan30 OUT=vlan16 SRC=10.20.30.60 DST=10.20.16.77 PROTO=TCP SPT=3389 DPT=41502 LEN=60
+Mar  5 06:19:21 fw-core02 kernel: FW-ACCEPT IN=vlan5 OUT=vlan5 SRC=10.20.5.11 DST=10.20.5.12 PROTO=TCP SPT=49220 DPT=53 LEN=60
+Mar  5 06:20:48 fw-core02 kernel: FW-DROP IN=vlan50 OUT=vlan1 SRC=10.50.1.22 DST=10.20.1.5 PROTO=UDP SPT=49330 DPT=161 LEN=64
+Mar  5 06:22:16 dns-resolver01 named[1420]: client 10.50.1.22#49440 query: intranet.corp.example.internal IN A + (10.20.5.11)
+Mar  5 06:23:43 dns-resolver01 named[1420]: client 10.50.1.23#49550 query: files.corp.example.internal IN A + (10.20.5.11)
+Mar  5 06:25:11 dns-resolver01 named[1420]: client 10.50.1.24#49660 query: mail.corp.example.internal IN A + (10.20.5.11)
+Mar  5 06:26:38 dns-resolver01 named[1420]: client 10.50.1.25#49770 query: a5b6.cloudfront.net IN A + (10.20.5.11)
+Mar  5 06:28:06 dns-resolver01 named[1420]: client 10.50.1.25#49772 query: e5566.dscd.akamaiedge.net IN A + (10.20.5.11)
+Mar  5 06:29:33 dns-resolver01 named[1420]: client 10.50.1.25#49774 query: cdn.sfx.ms IN A + (10.20.5.11)
+Mar  5 06:31:01 dns-resolver01 named[1420]: client 10.50.1.25#49776 query: au.update.microsoft.com IN A + (10.20.5.11)
+Mar  5 06:32:28 dns-resolver01 named[1420]: client 10.20.9.45#49880 query: telemetry.corpvendor.example.com IN A + (10.20.5.11)
+Mar  5 06:33:56 dns-resolver01 named[1420]: client 10.20.9.45#49882 query: telemetry.corpvendor.example.com IN A + (10.20.5.11)
+Mar  5 06:35:23 dns-resolver01 named[1420]: client 10.20.9.45#49884 query: telemetry.corpvendor.example.com IN A + (10.20.5.11)
+Mar  5 06:36:51 dns-resolver01 named[1420]: client 10.20.9.45#49886 query: telemetry.corpvendor.example.com IN A + (10.20.5.11)
+Mar  5 06:38:18 dns-resolver01 named[1420]: client 10.40.2.21#49990 query: relay-c.mailhost.example.net IN MX + (10.20.5.11)
+Mar  5 06:39:46 dns-resolver01 named[1420]: client 10.40.2.21#49992 query: spf.mailhost.example.net IN TXT + (10.20.5.11)
+Mar  5 06:41:13 ids-sensor01 snort: [1:1000204:2] INFO ICMP Echo Request observed from VPN pool [Classification: Misc activity] [Priority: 3] {ICMP} 10.50.1.22 -> 10.20.30.18
+Mar  5 06:42:41 ids-sensor01 snort: [1:1000424:3] INFO TLS handshake completed to internal service [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.50.1.24:48880 -> 10.20.30.18:443
+Mar  5 06:44:08 ids-sensor01 snort: [1:1000313:1] INFO SNMP get-request to firewall [Classification: Misc activity] [Priority: 3] {UDP} 10.20.9.40:49100 -> 10.20.1.5:161
+Mar  5 06:45:36 ids-sensor01 snort: [1:1000603:2] INFO NTP peer sync completed [Classification: Misc activity] [Priority: 3] {UDP} 10.20.5.12:123 -> 192.0.2.33:123
+Mar  5 06:47:03 ids-sensor01 suricata: [1:2013031:7] ET POLICY Python-urllib User-Agent Outbound [Classification: Not Suspicious Traffic] [Priority: 3] {TCP} 10.20.30.22:41260 -> 10.20.30.18:443
+Mar  5 06:48:31 ids-sensor01 suricata: [1:2100384:8] GPL ICMP_INFO PING [Classification: Misc activity] [Priority: 3] {ICMP} 10.20.9.40 -> 10.20.30.11
+Mar  5 06:49:58 ids-sensor01 suricata: [1:2230002:1] SURICATA TLS invalid record type [Classification: Generic Protocol Command Decode] [Priority: 3] {TCP} 10.20.16.81:52334 -> 198.51.100.20:443
+Mar  5 06:51:26 ids-sensor01 zeek: conn 10.50.1.23 48244 10.20.30.11 445 tcp smb SF 1835008 412160 orig_pkts=1412 resp_pkts=1104
+Mar  5 06:52:53 ids-sensor01 zeek: dns 10.50.1.25 48990 10.20.5.11 53 udp cdn.sfx.ms A NOERROR
+Mar  5 06:54:21 ids-sensor01 zeek: ssl 10.20.14.31 53192 203.0.113.10 443 TLSv13 server_name=www.example.com established=T
+Mar  5 06:55:48 ids-sensor01 zeek: ssl 10.20.16.81 52336 198.51.100.20 443 TLSv12 server_name=login.microsoftonline.com established=T
+Mar  5 06:57:16 ids-sensor01 zeek: files 10.20.14.44 -> 10.20.30.70 sha256=4f2c8811a9b3d7e6 filename=corp-api-1.8.5.tar.gz mime=application/gzip
+{"ts":"2025-03-05T07:00:00Z","event_type":"netflow","src_ip":"10.50.1.25","dst_ip":"10.20.5.11","src_port":48990,"dst_port":53,"proto":"udp","packets":6,"bytes":702,"duration":0.07,"tcp_flags":"-"}
+{"ts":"2025-03-05T07:01:28Z","event_type":"netflow","src_ip":"10.20.9.45","dst_ip":"198.51.100.27","src_port":48380,"dst_port":8443,"proto":"tcp","packets":88,"bytes":65536,"duration":14.2,"tcp_flags":"AP"}
+{"ts":"2025-03-05T07:02:55Z","event_type":"netflow","src_ip":"10.20.9.45","dst_ip":"198.51.100.28","src_port":48490,"dst_port":9443,"proto":"tcp","packets":102,"bytes":81920,"duration":16.8,"tcp_flags":"AP"}
+{"ts":"2025-03-05T07:04:23Z","event_type":"netflow","src_ip":"10.40.2.21","dst_ip":"192.0.2.43","src_port":48602,"dst_port":25,"proto":"tcp","packets":41,"bytes":26624,"duration":4.7,"tcp_flags":"AP"}
+{"ts":"2025-03-05T07:05:50Z","event_type":"netflow","src_ip":"10.20.5.12","dst_ip":"192.0.2.33","src_port":123,"dst_port":123,"proto":"udp","packets":2,"bytes":152,"duration":0.01,"tcp_flags":"-"}
+{"ts":"2025-03-05T07:07:18Z","event_type":"netflow","src_ip":"10.20.30.60","dst_ip":"10.20.16.77","src_port":3389,"dst_port":41502,"proto":"tcp","packets":6104,"bytes":8388608,"duration":1804.7,"tcp_flags":"AP"}
+{"ts":"2025-03-05T07:08:45Z","event_type":"netflow","src_ip":"10.20.5.11","dst_ip":"10.20.5.12","src_port":49220,"dst_port":53,"proto":"tcp","packets":12,"bytes":4096,"duration":0.4,"tcp_flags":"AP"}
+Mar  5 07:15:00 vpn-gw01 openvpn: user=a.rivera CN=WKS-ENG-104 connected from 203.0.113.144 assigned 10.50.1.26
+Mar  5 07:16:28 vpn-gw01 openvpn: user=a.rivera CN=WKS-ENG-104 TLS handshake completed, cipher TLS_CHACHA20_POLY1305_SHA256
+Mar  5 07:17:55 vpn-gw01 openvpn: user=helpdesk1 CN=WKS-IT-055 connected from 203.0.113.145 assigned 10.50.1.27
+Mar  5 07:19:23 vpn-gw01 openvpn: user=helpdesk1 CN=WKS-IT-055 disconnected, duration 620s, bytes_in 4194304 bytes_out 1048576
+Mar  5 07:20:50 vpn-gw01 openvpn: user=mnguyen CN=LAP-EXEC-004 disconnected, duration 4120s, bytes_in 62914560 bytes_out 12582912
+Mar  5 07:22:18 vpn-gw01 openvpn: user=jmalik CN=WKS-ACC-011 disconnected, duration 3012s, bytes_in 20971520 bytes_out 5242880
+Mar  5 07:23:45 vpn-gw01 openvpn: TLS session cache statistics: hits 412 misses 18 timeouts 4
+Mar  5 07:25:13 vpn-gw01 openvpn: MULTI: primary virtual IP for a.rivera/203.0.113.144:1194 is 10.50.1.26
+Mar  5 07:26:40 dhcp-srv01 dhcpd: DHCPACK on 10.20.14.44 to aa:bb:cc:dd:ee:ff (WKS-ENG-104) via eth1 lease-time 28800
+Mar  5 07:28:08 dhcp-srv01 dhcpd: DHCPACK on 10.20.14.90 to aa:bb:cc:12:34:56 (WKS-IT-055) via eth1 lease-time 28800
+Mar  5 07:29:35 dhcp-srv01 dhcpd: DHCPOFFER on 10.20.16.81 to aa:bb:cc:65:43:21 (LAP-EXEC-004) via eth1
+Mar  5 07:31:03 dhcp-srv01 dhcpd: DHCPNAK on 10.20.16.99 to aa:bb:cc:99:88:77 via eth1
+Mar  5 07:32:30 dhcp-srv01 dhcpd: Pool 10.20.16.0/24 utilization is 62 percent
+Mar  5 07:33:58 dhcp-srv01 dhcpd: uid lease 10.20.16.90 for client aa:bb:cc:44:55:66 is duplicate on 10.20.16.0/24
+Mar  5 07:35:25 dhcp-srv01 dhcpd: Wrote 219 leases to leases file after reload.
+Mar  5 07:36:53 sw-access02 %DOT1X-5-SUCCESS: Authentication successful for client (aa:bb:cc:dd:ee:ff) on Interface Gi2/0/08
+Mar  5 07:38:20 sw-access02 %AUTHMGR-5-VLANASSIGN: VLAN 14 assigned to Interface Gi2/0/08 AuditSessionID 0A140211
+Mar  5 07:39:48 sw-access02 %LINK-3-UPDOWN: Interface GigabitEthernet2/0/08, changed state to up
+Mar  5 07:41:15 sw-access02 %PORT_SECURITY-6-ADDR_ADDED: MAC address aa:bb:cc:dd:ee:ff learned on Gi2/0/08
+Mar  5 07:42:43 sw-access02 %SYS-5-CONFIG_I: Configured from console by netops on vty1 (10.30.1.14)
+Mar  5 07:44:10 rtr-wan01 %BGP-5-ADJCHANGE: neighbor 203.0.113.2 Up
+Mar  5 07:45:38 rtr-wan01 %OSPF-5-ADJCHG: Process 1, Nbr 10.20.1.3 on Vlan5 from EXCHANGE to FULL, Exchange Done
+Mar  5 07:47:05 rtr-wan01 %SEC-6-IPACCESSLOGP: list OUTBOUND-FILTER permitted tcp 10.20.30.18(39112) -> 198.51.100.21(8443), 1 packet
+Mar  5 07:48:33 rtr-wan01 %SEC-6-IPACCESSLOGP: list OUTBOUND-FILTER permitted udp 10.20.5.11(123) -> 192.0.2.30(123), 1 packet
+Mar  5 07:50:00 rtr-wan01 %SEC-6-IPACCESSLOGDP: list INBOUND-FILTER denied icmp 198.51.100.243 -> 203.0.113.7 (8/0), 3 packets
